@@ -2,7 +2,7 @@
 name = "aiur"
 description = "Experimental async runtime for Windows"
 version = "0.0.1"
-authors = ["Vladimir Zvezda <v.zvezda@gmail.com>"]
+authors = ["Vladimir Zvezda"]
 edition = "2018"
 license = "MIT"
 keywords = ["windows", "async", "executor"]
