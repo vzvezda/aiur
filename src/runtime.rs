@@ -58,7 +58,7 @@ where
         }
     }
 
-    pub(crate) fn block_on<'runtime, ResT: 'static, FutureT: 'runtime>(
+    pub(crate) fn block_on<'runtime, ResT: 'runtime, FutureT: 'runtime>(
         &'runtime self,
         future: FutureT,
     ) -> ResT

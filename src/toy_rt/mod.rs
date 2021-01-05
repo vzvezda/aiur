@@ -11,7 +11,7 @@ pub use toy_reactor::SleepMode;
 // Make a toy runtime
 crate::export_runtime!(ToyReactor);
 
-pub fn with_runtime_in_mode<FuncT, InitT, ResT: 'static>(
+pub fn with_runtime_in_mode<FuncT, InitT, ResT>(
     sleep_mode: SleepMode,
     async_function: FuncT,
     init: InitT,
@@ -23,5 +23,4 @@ where
     with_runtime(move || ToyReactor::new_with_mode(sleep_mode), 
         async_function, init)
 }
-
 
