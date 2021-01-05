@@ -29,7 +29,7 @@ macro_rules! export_runtime {
         pub use $crate::GetEventId;
         pub use $crate::sleep;
 
-        pub fn with_runtime<ReactorFn, FuncT, InitT, ResT: 'static>(
+        pub fn with_runtime<ReactorFn, FuncT, InitT, ResT>(
             reactor_constructor: ReactorFn,
             async_function: FuncT,
             init: InitT,
@@ -41,7 +41,5 @@ macro_rules! export_runtime {
         {
             $crate::with_runtime_base(reactor_constructor(), async_function, init)
         }
-
-
     };
 }
