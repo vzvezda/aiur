@@ -27,34 +27,13 @@ impl<'runtime, ReactorT> Scope<'runtime, ReactorT> where ReactorT: Reactor {
     where
         FutureT: std::future::Future<Output = ()> + 'runtime,
     {
-        //self.tasks.push(self.rt.spawn(future));
+        self.tasks.push(self.rt.spawn(future));
         println!("task has been spawn");
     }
 
 }
 
 impl<'runtime, ReactorT> Drop for Scope<'runtime, ReactorT> where ReactorT: Reactor {
-    fn drop(&mut self) {
-        println!("Dropping scope");
-    }
-}
-
-/*
-impl<'runtime, ReactorT> Scope<'runtime> {
-    pub fn new<'name>(rt: &'runtime Runtime) -> Self {
-        Scope {
-            rt,
-            tasks: Vec::new(),
-        }
-    }
-
-    pub fn hello(&self) {
-        println!("Hello, {}", self.name);
-    }
-
-}
-
-impl<'runtime> Drop for Scope<'runtime> {
     fn drop(&mut self) {
         while self.tasks.iter().any(|itask_ptr| {
             unsafe {
@@ -68,9 +47,6 @@ impl<'runtime> Drop for Scope<'runtime> {
             }
         }
 
-        println!("Dropping scope {}", self.name);
+        println!("Finish dropping scope");
     }
 }
-
-*/
-

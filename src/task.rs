@@ -19,6 +19,9 @@ pub(crate) enum Completion {
 pub(crate) trait ITask {
     fn poll(&mut self) -> Completion;
     fn on_pinned(&mut self);
+    // for scope.spawn()
+    fn is_completed(&self) -> bool;
+    fn on_completed(&mut self);
 }
 
 // This is the struct to where the data of RawWaker is pointed to.
@@ -107,6 +110,14 @@ where
 
         self.header.itask_ptr = Some(static_bounded_itask_trait_ptr);
     }
+
+    fn is_completed(&self) -> bool {
+        self.completed 
+    }
+
+    fn on_completed(&mut self) {
+        self.completed = true;
+    }
 }
 
 // Constructs the task
@@ -129,4 +140,24 @@ where
         result: res_ptr,
         future: future,
     }
+}
+
+pub(crate) fn allocate_void_task<'runtime, FutureT>(
+    awoken: &'runtime Awoken,
+    future: FutureT,
+) -> *mut (dyn ITask + 'runtime)
+where
+    FutureT: Future<Output = ()> + 'runtime,
+{
+    let boxed: Box<dyn ITask + 'runtime> = Box::new(TaskImpl {
+        header: TaskHeader {
+            awoken: &*awoken,
+            itask_ptr: None, // address is not ready yet
+        },
+        completed: false,
+        result: std::ptr::null_mut(),
+        future: future,
+    });
+
+    Box::into_raw(boxed)
 }

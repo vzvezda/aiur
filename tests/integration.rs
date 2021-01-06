@@ -98,6 +98,34 @@ fn consequential_sleeps_works() {
     toy_rt::with_runtime_in_mode(SLEEP_MODE, multi_sleep, 1);
 }
 
+mod measure {
+    use std::cell::Cell;
+
+    pub(super) struct MutCounter {
+        counter: Cell<u32>,
+    }
+
+    impl MutCounter {
+        pub(super) fn new(init: u32) -> Self {
+            MutCounter {
+                counter: Cell::new(init),
+            }
+        }
+
+        pub(super) fn inc(&self) {
+            self.counter.set(self.get() + 1);
+        }
+
+        pub(super) fn dec(&self) {
+            self.counter.set(self.get() - 1);
+        }
+
+        pub(super) fn get(&self) -> u32 {
+            self.counter.get()
+        }
+    }
+}
+
 // this is how I start creating my own version of 'futures' crate...
 mod future_utils {
     use std::future::Future;
@@ -174,8 +202,6 @@ mod future_utils {
                 },
                 _ => return Poll::Ready(())
             }
-
-            Poll::Pending
         }
     }
 
@@ -223,3 +249,33 @@ fn two_concurrent_timers_works() {
     toy_rt::with_runtime_in_mode(SLEEP_MODE, start_concurrent, ());
 }
 
+// Verify spawn in a linear pattern works. Linear pattern is when an async function spawns
+// another async funciton which in turn spawn any async function, etc up to some depth.
+#[test]
+fn spawn_linear_works() {
+    use measure::MutCounter;
+
+    let counter = MutCounter::new(0);
+
+    const MAX_DEPTH: u32 = 10;
+
+    async fn measured(rt: &toy_rt::Runtime, counter: &MutCounter) {
+        let start = rt.io().now32();
+        deep_dive(rt, MAX_DEPTH, counter).await;
+        let elapsed = rt.io().now32() - start;
+        assert!(elapsed >= 1 * 1000);
+    }
+
+    async fn deep_dive(rt: &toy_rt::Runtime, depth: u32, counter: &MutCounter) {
+        if depth == 0 {
+            async_sleep_once(rt, 1).await;
+        } else {
+            counter.inc();
+            let mut scope = toy_rt::Scope::new(rt);
+            scope.spawn(deep_dive(rt, depth - 1, counter));
+        }
+    }
+
+    toy_rt::with_runtime_in_mode(SLEEP_MODE, measured, &counter);
+    assert_eq!(counter.get(), MAX_DEPTH, "Unexpected dive depth");
+}
