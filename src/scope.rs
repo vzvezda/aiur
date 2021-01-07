@@ -10,16 +10,28 @@ pub struct Scope<'runtime, ReactorT> where ReactorT: Reactor {
     rt: &'runtime Runtime<ReactorT>,
     tasks: Vec<*mut (dyn ITask + 'runtime)>,
 
+    // need a better storage
+    name: String,
+
     // there is also an idea that we can avoid dynamic memory and use a list of tasks
     // interconnected to each other.
     // task_list: Option<*mut (dyn ITask + 'runtime)>,
 }
 
 impl<'runtime, ReactorT> Scope<'runtime, ReactorT> where ReactorT: Reactor {
-    pub fn new<'name>(rt: &'runtime Runtime<ReactorT>) -> Self {
+    pub fn new(rt: &'runtime Runtime<ReactorT>) -> Self {
         Scope {
             rt,
             tasks: Vec::new(),
+            name: String::new(),
+        }
+    }
+
+    pub fn new_named<'name>(rt: &'runtime Runtime<ReactorT>, name: &'name str) -> Self {
+        Scope {
+            rt,
+            tasks: Vec::new(),
+            name: name.to_string(),
         }
     }
 
@@ -28,25 +40,24 @@ impl<'runtime, ReactorT> Scope<'runtime, ReactorT> where ReactorT: Reactor {
         FutureT: std::future::Future<Output = ()> + 'runtime,
     {
         self.tasks.push(self.rt.spawn(future));
-        println!("task has been spawn");
+        println!("task {} has been spawn", self.name);
     }
 
 }
 
 impl<'runtime, ReactorT> Drop for Scope<'runtime, ReactorT> where ReactorT: Reactor {
     fn drop(&mut self) {
+        println!("<<<< Entering scope {}", self.name);
         while self.tasks.iter().any(|itask_ptr| {
             unsafe {
                 !(**itask_ptr).is_completed()
             }
         }) {
+            println!("Scope loop {}", self.name);
             self.rt.spawn_phase();
-            let task = self.rt.poll_phase();
-            if task.is_some() {
-                 unsafe { (*task.unwrap()).on_completed(); }
-            }
+            self.rt.poll_phase();
         }
 
-        println!("Finish dropping scope");
+        println!(">>>> Leaving scope {}", self.name);
     }
 }

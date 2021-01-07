@@ -66,6 +66,10 @@ impl TaskMaster {
         self.active_tasks.set(self.active_tasks.get() + 1);
     }
 
+    fn add_task_to_spawn(&self, task_ptr: *mut (dyn ITask + 'static)) {
+        self.spawn_list.borrow_mut().push(task_ptr);
+    }
+
     fn dec_tasks(&self) {
         self.active_tasks.set(self.active_tasks.get() - 1);
     }
@@ -116,12 +120,7 @@ where
         // while self.executor.borrow().is_active() || self.executor.borrow().has_tasks_to_spawn() {
         while self.task_master.has_tasks() {
             self.spawn_phase();
-
-            // it happens: we have tasks in spawn list, but nothing to wait in reactor
-            if self.task_master.has_scheduled_tasks() {
-                self.poll_phase();
-            }
-            // TODO: deallocate if &addr != &task
+            self.poll_phase();
         }
 
         unsafe { result.assume_init() }
@@ -138,7 +137,8 @@ where
         let task = unsafe {
             std::mem::transmute::<*mut (dyn ITask + 'runtime), *mut (dyn ITask + 'static)>(task)
         };
-        self.task_master.inc_tasks();
+
+        self.task_master.add_task_to_spawn(task);
         task
     }
 
@@ -157,26 +157,37 @@ where
         // this is the spawn block: poll any futures that were "spawn"
         spawn_queue.drain(..).for_each(|itask_ptr| {
             println!("Started spawn future {:?}", itask_ptr);
-            let res = unsafe {
+            let completed = unsafe {
                 (*itask_ptr).on_pinned();
                 (*itask_ptr).poll()
             };
             // TODO: fill the itask_ptr for waker
 
             // Make a poll and inc the counter
-            if res == Completion::Working {
+            if completed == Completion::Working {
                 self.task_master.inc_tasks();
+            } else {
+                unsafe { (*itask_ptr).on_completed(); }
             }
         });
     }
 
-    // Waits for the
+    // Waits for a signal from reactor and then 
     pub(crate) fn poll_phase(&self) -> Option<*mut dyn ITask> {
+        if !self.task_master.has_scheduled_tasks() {
+            println!("Poll phase without tasks");
+            // it happens: we have tasks in spawn list, but nothing to wait in reactor
+            return None;
+        }
+
         // Poll the awaken task
         let awoken_task = self.wait();
 
         if unsafe { (*awoken_task).poll() } == Completion::Done {
+            println!("Completed task");
+            unsafe { (*awoken_task).on_completed(); }
             self.task_master.dec_tasks();
+            // TODO: deallocate if &addr != &task
             Some(awoken_task)
         } else {
             None

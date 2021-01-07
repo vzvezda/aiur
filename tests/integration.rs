@@ -257,7 +257,7 @@ fn spawn_linear_works() {
 
     let counter = MutCounter::new(0);
 
-    const MAX_DEPTH: u32 = 10;
+    const MAX_DEPTH: u32 = 2;
 
     async fn measured(rt: &toy_rt::Runtime, counter: &MutCounter) {
         let start = rt.io().now32();
@@ -267,13 +267,17 @@ fn spawn_linear_works() {
     }
 
     async fn deep_dive(rt: &toy_rt::Runtime, depth: u32, counter: &MutCounter) {
+        println!("---> Entering deep_dive {}", depth);
+
         if depth == 0 {
             async_sleep_once(rt, 1).await;
         } else {
             counter.inc();
-            let mut scope = toy_rt::Scope::new(rt);
+            let mut scope = toy_rt::Scope::new_named(rt, &format!("xx#{}", depth));
             scope.spawn(deep_dive(rt, depth - 1, counter));
         }
+
+        println!("<--- leaving deep_dive {}", depth);
     }
 
     toy_rt::with_runtime_in_mode(SLEEP_MODE, measured, &counter);
