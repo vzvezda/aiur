@@ -7,7 +7,7 @@ use std::time::Duration;
 // Use the toy runtime
 use aiur::toy_rt::{self};
 
-// With emulated sleep test run instantly, actual sleep actually wait for specified 
+// With emulated sleep test run instantly, actual sleep actually wait for specified
 // amount of time.
 
 //const SLEEP_MODE: toy_rt::SleepMode = toy_rt::SleepMode::Actual;
@@ -26,7 +26,7 @@ fn toy_runtime_fn_works() {
 // Verifies that with_runtime() works when InitT is a reference
 #[test]
 fn toy_runtime_reference_compiles() {
-    let mut param : u32 = 0;
+    let mut param: u32 = 0;
 
     async fn async_42ref(_rt: &toy_rt::Runtime, pref: &mut u32) {
         *pref = 42;
@@ -183,9 +183,7 @@ mod future_utils {
 
         fn get_f2(&mut self) -> Pin<&mut FutureT2> {
             //  This is okay because `field` is pinned when `self` is.
-            unsafe {
-                Pin::new_unchecked(&mut self.f2)
-            }
+            unsafe { Pin::new_unchecked(&mut self.f2) }
         }
     }
 
@@ -200,7 +198,7 @@ mod future_utils {
                     Poll::Pending => return Poll::Pending,
                     _ => return Poll::Ready(()),
                 },
-                _ => return Poll::Ready(())
+                _ => return Poll::Ready(()),
             }
         }
     }
@@ -232,18 +230,14 @@ fn sleep_cancellation_works() {
 #[test]
 fn two_concurrent_timers_works() {
     async fn start_concurrent(rt: &toy_rt::Runtime, _: ()) {
-
         let start = rt.io().now32();
 
-        future_utils::any2void(
-            async_sleep_once(rt, 1),
-            async_sleep_once(rt, 5)
-            ).await;
+        future_utils::any2void(async_sleep_once(rt, 1), async_sleep_once(rt, 5)).await;
 
         let elapsed = rt.io().now32() - start;
 
-        assert!(elapsed >= 1*1000);
-        assert!(elapsed <  5*1000);
+        assert!(elapsed >= 1 * 1000);
+        assert!(elapsed < 5 * 1000);
     }
 
     toy_rt::with_runtime_in_mode(SLEEP_MODE, start_concurrent, ());
@@ -251,6 +245,8 @@ fn two_concurrent_timers_works() {
 
 // Verify spawn in a linear pattern works. Linear pattern is when an async function spawns
 // another async funciton which in turn spawn any async function, etc up to some depth.
+//
+// [spawn] - [spawn] - [...] - [spawn] - [sleep 1s]
 #[test]
 fn spawn_linear_works() {
     use measure::MutCounter;
@@ -258,13 +254,15 @@ fn spawn_linear_works() {
     let counter = MutCounter::new(0);
 
     const MAX_DEPTH: u32 = 10;
+    const THRESHOLD_MS: u32 = 500; 
 
     async fn measured(rt: &toy_rt::Runtime, counter: &MutCounter) {
         let start = rt.io().now32();
         deep_dive(rt, MAX_DEPTH, counter).await;
         let elapsed = rt.io().now32() - start;
+
         assert!(elapsed >= 1 * 1000);
-        assert!(elapsed < 1 * 1500); // rough estimate
+        assert!(elapsed < 1 * 1000 + THRESHOLD_MS); // use a threashold to avoid false alarms
     }
 
     async fn deep_dive(rt: &toy_rt::Runtime, depth: u32, counter: &MutCounter) {
@@ -281,36 +279,150 @@ fn spawn_linear_works() {
     assert_eq!(counter.get(), MAX_DEPTH, "Unexpected dive depth");
 }
 
+// Returns how many nodes in a full tree (e.g. all children with nodes)
+fn nodes_in_tree(children: u32, depth: u32) -> u32 {
+    // formula from SO: (N^L-1) / (N-1)
+    (children.pow(depth) - 1) / (children - 1)
+}
+
+// Verify how it works when spawn tree looks like this:
+//    * root task spawn 3 tasks
+//    * these 3 tasks spawn each
+//    * each of these tasks spawn 3 tasks
+//    * etc
+//    * on the deepest level task performs a sleep (1 sec), ending this recursion.
+//
+//             []
+//      []     []     []
+//    [][][] [][][] [][][]
+//    ...
+//
+//    So there may be a lot of task spawned, but the total duration of the test should be like 1
+//    second, because all tasks make the sleep paralel.
 #[test]
 fn spawn_tree_works() {
     use measure::MutCounter;
 
-    let counter = MutCounter::new(0);
+    let node_counter = MutCounter::new(0);
 
     const MAX_DEPTH: u32 = 5;
     const MAX_WIDTH: u32 = 3;
+    const THRESHOLD_MS: u32 = 500; 
 
-    async fn measured(rt: &toy_rt::Runtime, counter: &MutCounter) {
+    async fn measured(rt: &toy_rt::Runtime, node_counter: &MutCounter) {
         let start = rt.io().now32();
-        super_deep_dive(rt, MAX_DEPTH, counter).await;
+        super_deep_dive(rt, MAX_DEPTH, node_counter).await;
         let elapsed = rt.io().now32() - start;
+
+        // lot of sleeps goes in parallel, so total execution time is around 1 sec
         assert!(elapsed >= 1 * 1000);
-        assert!(elapsed < 1 * 1500); // rough estimate
+        assert!(elapsed < 1 * 1000 + THRESHOLD_MS); // use a threashold to avoid false alarms
     }
 
-    async fn super_deep_dive(rt: &toy_rt::Runtime, depth: u32, counter: &MutCounter) {
+    async fn super_deep_dive(rt: &toy_rt::Runtime, depth: u32, node_counter: &MutCounter) {
         if depth == 0 {
-            async_sleep_once(rt, 1).await;
+            toy_rt::sleep(rt, Duration::from_secs(1)).await;
+            // This tree layer does not do the 'node_counter.inc();'
         } else {
-            counter.inc();
+            node_counter.inc();
             let mut scope = toy_rt::Scope::new_named(rt, &format!("xx#{}", depth));
             for i in 0..MAX_WIDTH {
-                scope.spawn(super_deep_dive(rt, depth - 1, counter));
+                scope.spawn(super_deep_dive(rt, depth - 1, node_counter));
             }
         }
     }
 
-    toy_rt::with_runtime_in_mode(SLEEP_MODE, measured, &counter);
-    assert_eq!(counter.get(), 121, "Unexpected dive depth");
+    toy_rt::with_runtime_in_mode(SLEEP_MODE, measured, &node_counter);
+    assert_eq!(nodes_in_tree(3, 5), 121);
+    assert_eq!(
+        node_counter.get(),
+        nodes_in_tree(MAX_WIDTH, MAX_DEPTH),
+        "Unexpected node counts"
+    );
+}
+
+// Same as above but, but each tree node not only spawn children, but also make sleep(). This
+// is how we verify that executor works fine when there there are spawn (executor) and sleep
+// (reactor) activity in each task.
+#[test]
+fn spawn_mixed_tree_works() {
+    use measure::MutCounter;
+
+    let node_counter = MutCounter::new(0);
+
+    const MAX_DEPTH: u32 = 5;
+    const MAX_WIDTH: u32 = 3;
+    const THRESHOLD_MS: u32 = 500;
+
+    async fn measured(rt: &toy_rt::Runtime, node_counter: &MutCounter) {
+        let start = rt.io().now32();
+        sleep_and_deep_dive(rt, MAX_DEPTH, node_counter).await;
+        let elapsed = rt.io().now32() - start;
+
+        // On each layer this is 1 second of sleep and there is also one additional layer of sleep
+        assert!(elapsed >= 6 * 1000);
+        assert!(elapsed < 6 * 1000 + THRESHOLD_MS); // use threshold to avoid false alarms
+    }
+
+    async fn sleep_and_deep_dive(rt: &toy_rt::Runtime, depth: u32, node_counter: &MutCounter) {
+        if depth > 0 {
+            node_counter.inc();
+            let mut scope = toy_rt::Scope::new_named(rt, &format!("xx#{}", depth));
+            for i in 0..MAX_WIDTH {
+                toy_rt::sleep(rt, Duration::from_millis((1000 / MAX_WIDTH + 1).into())).await;
+                scope.spawn(sleep_and_deep_dive(rt, depth - 1, node_counter));
+            }
+        } else {
+            toy_rt::sleep(rt, Duration::from_secs(1)).await;
+        }
+    }
+
+    toy_rt::with_runtime_in_mode(SLEEP_MODE, measured, &node_counter);
+    assert_eq!(nodes_in_tree(3, 5), 121);
+    assert_eq!(
+        node_counter.get(),
+        nodes_in_tree(MAX_WIDTH, MAX_DEPTH),
+        "Unexpected node counts"
+    );
+}
+
+// Just like in previous spawn tests this test makes a tree but without any reactor's io (e.g.
+// no sleep). This test verifies that it works fine when no i/o involved.
+#[test]
+fn spawn_only_works() {
+    use measure::MutCounter;
+
+    let node_counter = MutCounter::new(0);
+
+    const MAX_DEPTH: u32 = 5;
+    const MAX_WIDTH: u32 = 3;
+    const THRESHOLD_MS: u32 = 500;
+
+    async fn measured(rt: &toy_rt::Runtime, node_counter: &MutCounter) {
+        let start = rt.io().now32();
+        deep_dive_without_sleep(rt, MAX_DEPTH, node_counter).await;
+        let elapsed = rt.io().now32() - start;
+
+        // No sleep, so there should be no waits.
+        assert!(elapsed < THRESHOLD_MS);
+    }
+
+    async fn deep_dive_without_sleep(rt: &toy_rt::Runtime, depth: u32, node_counter: &MutCounter) {
+        if depth > 0 {
+            node_counter.inc();
+            let mut scope = toy_rt::Scope::new_named(rt, &format!("xx#{}", depth));
+            for i in 0..MAX_WIDTH {
+                scope.spawn(deep_dive_without_sleep(rt, depth - 1, node_counter));
+            }
+        }
+    }
+
+    toy_rt::with_runtime_in_mode(SLEEP_MODE, measured, &node_counter);
+    assert_eq!(nodes_in_tree(3, 5), 121);
+    assert_eq!(
+        node_counter.get(),
+        nodes_in_tree(MAX_WIDTH, MAX_DEPTH),
+        "Unexpected node counts"
+    );
 }
 
