@@ -116,9 +116,11 @@ mod measure {
             self.counter.set(self.get() + 1);
         }
 
+        /* currently unused
         pub(super) fn dec(&self) {
             self.counter.set(self.get() - 1);
         }
+        */
 
         pub(super) fn get(&self) -> u32 {
             self.counter.get()
@@ -130,7 +132,7 @@ mod measure {
 mod future_utils {
     use std::future::Future;
     use std::pin::Pin;
-    use std::task::{Context, Poll, Waker};
+    use std::task::{Context, Poll};
 
     // -----------------------------------------------------------------------------------------
     // PollInnerOnceFuture
@@ -157,7 +159,7 @@ mod future_utils {
         type Output = ();
 
         fn poll(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Self::Output> {
-            self.get_inner_future().poll(ctx);
+            let _does_not_matter = self.get_inner_future().poll(ctx);
             Poll::Ready(())
         }
     }
@@ -326,7 +328,7 @@ fn spawn_tree_works() {
         } else {
             node_counter.inc();
             let mut scope = toy_rt::Scope::new_named(rt, &format!("xx#{}", depth));
-            for i in 0..MAX_WIDTH {
+            for _i in 0..MAX_WIDTH {
                 scope.spawn(super_deep_dive(rt, depth - 1, node_counter));
             }
         }
@@ -368,7 +370,7 @@ fn spawn_mixed_tree_works() {
         if depth > 0 {
             node_counter.inc();
             let mut scope = toy_rt::Scope::new_named(rt, &format!("xx#{}", depth));
-            for i in 0..MAX_WIDTH {
+            for _i in 0..MAX_WIDTH {
                 toy_rt::sleep(rt, Duration::from_millis((1000 / MAX_WIDTH + 1).into())).await;
                 scope.spawn(sleep_and_deep_dive(rt, depth - 1, node_counter));
             }
@@ -411,7 +413,7 @@ fn spawn_only_works() {
         if depth > 0 {
             node_counter.inc();
             let mut scope = toy_rt::Scope::new_named(rt, &format!("xx#{}", depth));
-            for i in 0..MAX_WIDTH {
+            for _i in 0..MAX_WIDTH {
                 scope.spawn(deep_dive_without_sleep(rt, depth - 1, node_counter));
             }
         }
