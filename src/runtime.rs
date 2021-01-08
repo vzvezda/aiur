@@ -2,11 +2,12 @@
 //  / * \    aiur: the homeplanet for the famous executors
 // |' | '|   (c) 2020 - present, Vladimir Zvezda
 //   / \
+use std::cell::{Cell, RefCell};
 use std::future::Future;
-use std::cell::Cell;
+use std::collections::VecDeque;
 
 use crate::reactor::{EventId, Reactor};
-use crate::task::{ITask, Completion, construct_task};
+use crate::task::{allocate_void_task, construct_task, Completion, ITask};
 
 // Info about what the reactor was awoken from: the task and the event.
 pub(crate) struct Awoken {
@@ -31,19 +32,57 @@ impl Awoken {
     }
 }
 
+// This part of the runtime that maintain info about active tasks.
 struct TaskMaster {
+    spawn_list: RefCell<VecDeque<*mut (dyn ITask + 'static)>>,
+    active_tasks: Cell<u32>,
 }
 
 impl TaskMaster {
     fn new() -> Self {
-        TaskMaster {}
+        TaskMaster {
+            spawn_list: RefCell::new(VecDeque::new()),
+            active_tasks: Cell::new(0),
+        }
     }
+
+    fn add_task_for_spawn<'lifetime>(&self, task_ptr: *mut (dyn ITask + 'lifetime)) {
+        // TODO: justify the unsafe
+        let task_ptr = unsafe {
+            std::mem::transmute::<*mut (dyn ITask + '_), *mut (dyn ITask + 'static)>(task_ptr)
+        };
+
+        self.spawn_list.borrow_mut().push_back(task_ptr);
+    }
+
+    fn pop_task(&self) -> Option<*mut (dyn ITask + 'static)> {
+        self.spawn_list.borrow_mut().pop_front()
+    }
+
+    fn has_tasks(&self) -> bool {
+        self.active_tasks.get() > 0 || !self.spawn_list.borrow().is_empty()
+    }
+
+    fn has_scheduled_tasks(&self) -> bool {
+        self.active_tasks.get() > 0
+    }
+
+    fn inc_tasks(&self) {
+        self.active_tasks.set(self.active_tasks.get() + 1);
+    }
+
+    fn dec_tasks(&self) {
+        self.active_tasks.set(self.active_tasks.get() - 1);
+    }
+
 }
 
+//
+//
 pub struct Runtime<ReactorT> {
     reactor: ReactorT,
     awoken: Awoken,
-    _task_master: TaskMaster,
+    task_master: TaskMaster,
 }
 
 impl<ReactorT> Runtime<ReactorT>
@@ -54,10 +93,11 @@ where
         Self {
             reactor,
             awoken: Awoken::new(),
-            _task_master: TaskMaster::new(),
+            task_master: TaskMaster::new(),
         }
     }
 
+    // This is the actual execution and poll loop for with_runtime() method.
     pub(crate) fn block_on<'runtime, ResT: 'runtime, FutureT: 'runtime>(
         &'runtime self,
         future: FutureT,
@@ -66,61 +106,85 @@ where
         FutureT: Future<Output = ResT> + 'runtime,
     {
         let mut result = std::mem::MaybeUninit::<ResT>::uninit();
-        let mut task_body = construct_task(&self.awoken, future, result.as_mut_ptr()); 
+        let mut task_body = construct_task(&self.awoken, future, result.as_mut_ptr());
         // TODO: pin
         let task_ptr = &mut task_body as *mut (dyn ITask + 'runtime);
         task_body.on_pinned();
 
-        loop {
-            if unsafe { (*task_ptr).poll() } == Completion::Done {
-                break
-            }
+        // TODO: Do not use the vector for just self task?
+        self.task_master.add_task_for_spawn(task_ptr);
 
-            self.wait();
-        }
-
-        /*
-
-        while something {
+        // while self.executor.borrow().is_active() || self.executor.borrow().has_tasks_to_spawn() {
+        while self.task_master.has_tasks() {
             self.spawn_phase();
-            let _completed_task = self.poll_phase();
-            // TODO: deallocate if &addr != &task
+            self.poll_phase();
         }
-        */
 
         unsafe { result.assume_init() }
+    }
+
+    // Adds a new future as a task in a new list that is to be spawn on a spawn_phase
+    pub(crate) fn spawn<'runtime, F>(&'runtime self, f: F) -> *mut (dyn ITask + 'runtime)
+    where
+        F: Future<Output = ()> + 'runtime,
+    {
+        let task = allocate_void_task(&self.awoken, f);
 
         /*
-
         // ok, we have this unsafe
         let task = unsafe {
-            std::mem::transmute::<*mut (dyn ITask + '_), *mut (dyn ITask + 'static)>(&mut task)
+            std::mem::transmute::<*mut (dyn ITask + 'runtime), *mut (dyn ITask + 'static)>(task)
         };
-        // TODO: Do not use the vector for just self task?
-        self.executor.borrow_mut().task_spawned(task);
+        */
 
-        while self.executor.borrow().is_active() || self.executor.borrow().has_tasks_to_spawn() {
-            self.spawn_phase();
+        self.task_master.add_task_for_spawn(task);
+        task
+    }
 
-            // Poll the awaken task
-            self.poll_phase();
-            // TODO: deallocate if &addr != &task
+    //
+    //
+    pub(crate) fn spawn_phase(&self) {
+
+        loop {
+            let itask_ptr = self.task_master.pop_task();
+            if itask_ptr.is_none() {
+                println!("spawn phase no tasks");
+                return;
+            }
+
+            println!("spawn phase launching the task");
+            let itask_ptr = itask_ptr.unwrap();
+
+            let completed = unsafe {
+                (*itask_ptr).on_pinned();
+                (*itask_ptr).poll()
+            };
+
+            // Make a poll and inc the counter
+            if completed == Completion::Working {
+                self.task_master.inc_tasks();
+            } else {
+                unsafe { (*itask_ptr).on_completed(); }
+            }
+        }
+    }
+
+    // Waits for a signal from reactor and then 
+    pub(crate) fn poll_phase(&self) -> Option<*mut dyn ITask> {
+        if !self.task_master.has_scheduled_tasks() {
+            println!("Poll phase without tasks");
+            // it happens: we have tasks in spawn list, but nothing to wait in reactor
+            return None;
         }
 
-        unsafe { result.assume_init() }
-            */
-    }
-
-    // 
-    pub(crate) fn spawn_phase(&self) {
-    }
-
-    // Waits for the 
-    pub(crate) fn poll_phase(&self) -> Option<*mut dyn ITask> {
         // Poll the awaken task
         let awoken_task = self.wait();
 
         if unsafe { (*awoken_task).poll() } == Completion::Done {
+            println!("Completed task");
+            unsafe { (*awoken_task).on_completed(); }
+            self.task_master.dec_tasks();
+            // TODO: deallocate if &addr != &task
             Some(awoken_task)
         } else {
             None
