@@ -264,7 +264,7 @@ fn spawn_linear_works() {
         deep_dive(rt, MAX_DEPTH, counter).await;
         let elapsed = rt.io().now32() - start;
         assert!(elapsed >= 1 * 1000);
-        assert!(elapsed < 1 * 2000);
+        assert!(elapsed < 1 * 1500); // rough estimate
     }
 
     async fn deep_dive(rt: &toy_rt::Runtime, depth: u32, counter: &MutCounter) {
@@ -295,8 +295,7 @@ fn spawn_tree_works() {
         super_deep_dive(rt, MAX_DEPTH, counter).await;
         let elapsed = rt.io().now32() - start;
         assert!(elapsed >= 1 * 1000);
-        assert_eq!(elapsed, 8); // need to solve this
-        //assert!(elapsed < 1 * 2000);
+        assert!(elapsed < 1 * 1500); // rough estimate
     }
 
     async fn super_deep_dive(rt: &toy_rt::Runtime, depth: u32, counter: &MutCounter) {

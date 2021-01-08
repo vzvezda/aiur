@@ -4,6 +4,7 @@
 //   / \
 use std::cell::{Cell, RefCell};
 use std::future::Future;
+use std::collections::VecDeque;
 
 use crate::reactor::{EventId, Reactor};
 use crate::task::{allocate_void_task, construct_task, Completion, ITask};
@@ -33,14 +34,14 @@ impl Awoken {
 
 // This part of the runtime that maintain info about active tasks.
 struct TaskMaster {
-    spawn_list: RefCell<Vec<*mut (dyn ITask + 'static)>>,
+    spawn_list: RefCell<VecDeque<*mut (dyn ITask + 'static)>>,
     active_tasks: Cell<u32>,
 }
 
 impl TaskMaster {
     fn new() -> Self {
         TaskMaster {
-            spawn_list: RefCell::new(Vec::new()),
+            spawn_list: RefCell::new(VecDeque::new()),
             active_tasks: Cell::new(0),
         }
     }
@@ -51,7 +52,11 @@ impl TaskMaster {
             std::mem::transmute::<*mut (dyn ITask + '_), *mut (dyn ITask + 'static)>(task_ptr)
         };
 
-        self.spawn_list.borrow_mut().push(task_ptr);
+        self.spawn_list.borrow_mut().push_back(task_ptr);
+    }
+
+    fn pop_task(&self) -> Option<*mut (dyn ITask + 'static)> {
+        self.spawn_list.borrow_mut().pop_front()
     }
 
     fn has_tasks(&self) -> bool {
@@ -70,10 +75,6 @@ impl TaskMaster {
         self.active_tasks.set(self.active_tasks.get() - 1);
     }
 
-    pub fn swap_spawn_queue(&self, vec: &mut Vec<*mut dyn ITask>) {
-        vec.clear();
-        std::mem::swap(&mut *self.spawn_list.borrow_mut(), vec);
-    }
 }
 
 //
@@ -141,25 +142,23 @@ where
     }
 
     //
-    fn get_queue(&self, mut spawn_queue: &mut Vec<*mut dyn ITask>) {
-        self.task_master.swap_spawn_queue(&mut spawn_queue);
-    }
-
     //
     pub(crate) fn spawn_phase(&self) {
-        let mut spawn_queue = Vec::new();
 
-        self.get_queue(&mut spawn_queue);
-        println!("spawn phase queue size {}", spawn_queue.len());
+        loop {
+            let itask_ptr = self.task_master.pop_task();
+            if itask_ptr.is_none() {
+                println!("spawn phase no tasks");
+                return;
+            }
 
-        // this is the spawn block: poll any futures that were "spawn"
-        spawn_queue.drain(..).for_each(|itask_ptr| {
-            println!("Started spawn future {:?}", itask_ptr);
+            println!("spawn phase launching the task");
+            let itask_ptr = itask_ptr.unwrap();
+
             let completed = unsafe {
                 (*itask_ptr).on_pinned();
                 (*itask_ptr).poll()
             };
-            // TODO: fill the itask_ptr for waker
 
             // Make a poll and inc the counter
             if completed == Completion::Working {
@@ -167,7 +166,7 @@ where
             } else {
                 unsafe { (*itask_ptr).on_completed(); }
             }
-        });
+        }
     }
 
     // Waits for a signal from reactor and then 
