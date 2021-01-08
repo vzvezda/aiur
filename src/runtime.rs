@@ -66,10 +66,6 @@ impl TaskMaster {
         self.active_tasks.set(self.active_tasks.get() + 1);
     }
 
-    fn add_task_to_spawn(&self, task_ptr: *mut (dyn ITask + 'static)) {
-        self.spawn_list.borrow_mut().push(task_ptr);
-    }
-
     fn dec_tasks(&self) {
         self.active_tasks.set(self.active_tasks.get() - 1);
     }
@@ -133,12 +129,14 @@ where
     {
         let task = allocate_void_task(&self.awoken, f);
 
+        /*
         // ok, we have this unsafe
         let task = unsafe {
             std::mem::transmute::<*mut (dyn ITask + 'runtime), *mut (dyn ITask + 'static)>(task)
         };
+        */
 
-        self.task_master.add_task_to_spawn(task);
+        self.task_master.add_task_for_spawn(task);
         task
     }
 

@@ -257,18 +257,17 @@ fn spawn_linear_works() {
 
     let counter = MutCounter::new(0);
 
-    const MAX_DEPTH: u32 = 2;
+    const MAX_DEPTH: u32 = 10;
 
     async fn measured(rt: &toy_rt::Runtime, counter: &MutCounter) {
         let start = rt.io().now32();
         deep_dive(rt, MAX_DEPTH, counter).await;
         let elapsed = rt.io().now32() - start;
         assert!(elapsed >= 1 * 1000);
+        assert!(elapsed < 1 * 2000);
     }
 
     async fn deep_dive(rt: &toy_rt::Runtime, depth: u32, counter: &MutCounter) {
-        println!("---> Entering deep_dive {}", depth);
-
         if depth == 0 {
             async_sleep_once(rt, 1).await;
         } else {
@@ -276,10 +275,43 @@ fn spawn_linear_works() {
             let mut scope = toy_rt::Scope::new_named(rt, &format!("xx#{}", depth));
             scope.spawn(deep_dive(rt, depth - 1, counter));
         }
-
-        println!("<--- leaving deep_dive {}", depth);
     }
 
     toy_rt::with_runtime_in_mode(SLEEP_MODE, measured, &counter);
     assert_eq!(counter.get(), MAX_DEPTH, "Unexpected dive depth");
 }
+
+#[test]
+fn spawn_tree_works() {
+    use measure::MutCounter;
+
+    let counter = MutCounter::new(0);
+
+    const MAX_DEPTH: u32 = 5;
+    const MAX_WIDTH: u32 = 3;
+
+    async fn measured(rt: &toy_rt::Runtime, counter: &MutCounter) {
+        let start = rt.io().now32();
+        super_deep_dive(rt, MAX_DEPTH, counter).await;
+        let elapsed = rt.io().now32() - start;
+        assert!(elapsed >= 1 * 1000);
+        assert_eq!(elapsed, 8); // need to solve this
+        //assert!(elapsed < 1 * 2000);
+    }
+
+    async fn super_deep_dive(rt: &toy_rt::Runtime, depth: u32, counter: &MutCounter) {
+        if depth == 0 {
+            async_sleep_once(rt, 1).await;
+        } else {
+            counter.inc();
+            let mut scope = toy_rt::Scope::new_named(rt, &format!("xx#{}", depth));
+            for i in 0..MAX_WIDTH {
+                scope.spawn(super_deep_dive(rt, depth - 1, counter));
+            }
+        }
+    }
+
+    toy_rt::with_runtime_in_mode(SLEEP_MODE, measured, &counter);
+    assert_eq!(counter.get(), 121, "Unexpected dive depth");
+}
+
