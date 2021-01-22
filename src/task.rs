@@ -142,14 +142,15 @@ where
     }
 }
 
-pub(crate) fn allocate_void_task<'runtime, FutureT>(
+pub(crate) fn allocate_void_task<'runtime, 'future, FutureT>(
     awoken: &'runtime Awoken,
     future: FutureT,
-) -> *mut (dyn ITask + 'runtime)
+) -> *mut (dyn ITask + 'future)
 where
-    FutureT: Future<Output = ()> + 'runtime,
+    FutureT: Future<Output = ()> + 'future,
+    'runtime: 'future,
 {
-    let boxed: Box<dyn ITask + 'runtime> = Box::new(TaskImpl {
+    let boxed: Box<dyn ITask> = Box::new(TaskImpl {
         header: TaskHeader {
             awoken: &*awoken,
             itask_ptr: None, // address is not ready yet

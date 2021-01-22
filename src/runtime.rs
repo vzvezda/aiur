@@ -117,6 +117,7 @@ where
         // while self.executor.borrow().is_active() || self.executor.borrow().has_tasks_to_spawn() {
         while self.task_master.has_tasks() {
             self.spawn_phase();
+            self.channel_phase();
             self.poll_phase();
         }
 
@@ -124,21 +125,24 @@ where
     }
 
     // Adds a new future as a task in a new list that is to be spawn on a spawn_phase
-    pub(crate) fn spawn<'runtime, F>(&'runtime self, f: F) -> *mut (dyn ITask + 'runtime)
+    pub(crate) fn spawn<'runtime, 'scope, F>(&'runtime self, f: F) 
+        -> *mut (dyn ITask + 'static)
     where
         F: Future<Output = ()> + 'runtime,
     {
         let task = allocate_void_task(&self.awoken, f);
 
-        /*
+        self.task_master.add_task_for_spawn(task);
+
         // ok, we have this unsafe
         let task = unsafe {
             std::mem::transmute::<*mut (dyn ITask + 'runtime), *mut (dyn ITask + 'static)>(task)
         };
-        */
 
-        self.task_master.add_task_for_spawn(task);
         task
+    }
+
+    pub(crate) fn channel_phase(&self) {
     }
 
     //

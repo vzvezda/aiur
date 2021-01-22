@@ -256,7 +256,7 @@ fn spawn_linear_works() {
     let counter = MutCounter::new(0);
 
     const MAX_DEPTH: u32 = 10;
-    const THRESHOLD_MS: u32 = 500; 
+    const THRESHOLD_MS: u32 = 500;
 
     async fn measured(rt: &toy_rt::Runtime, counter: &MutCounter) {
         let start = rt.io().now32();
@@ -309,7 +309,7 @@ fn spawn_tree_works() {
 
     const MAX_DEPTH: u32 = 5;
     const MAX_WIDTH: u32 = 3;
-    const THRESHOLD_MS: u32 = 500; 
+    const THRESHOLD_MS: u32 = 500;
 
     async fn measured(rt: &toy_rt::Runtime, node_counter: &MutCounter) {
         let start = rt.io().now32();
@@ -324,7 +324,7 @@ fn spawn_tree_works() {
     async fn super_deep_dive(rt: &toy_rt::Runtime, depth: u32, node_counter: &MutCounter) {
         if depth == 0 {
             toy_rt::sleep(rt, Duration::from_secs(1)).await;
-            // This tree layer does not do the 'node_counter.inc();'
+        // This tree layer does not do the 'node_counter.inc();'
         } else {
             node_counter.inc();
             let mut scope = toy_rt::Scope::new_named(rt, &format!("xx#{}", depth));
@@ -428,3 +428,97 @@ fn spawn_only_works() {
     );
 }
 
+
+// Test that should compile 
+#[test]
+fn spawn_soundness_ok() {
+    async fn target<'runtime, 'param>(rt: &'runtime toy_rt::Runtime, param: &'param mut u32) {
+        *param = 42;
+    }
+
+    async fn spawn_sound(rt: &toy_rt::Runtime, flag: bool) {
+        let mut value : u32 = 0;
+
+        if flag {
+            let mut scope = toy_rt::Scope::new_named(rt, "soundness_ok_test");
+            // it should be fine to use '&mut value' here because it outlives the 'scope'.
+            scope.spawn(target(rt, &mut value));
+        }
+
+        assert_eq!(value, 42);
+    }
+
+    toy_rt::with_runtime_in_mode(SLEEP_MODE, spawn_sound, true);
+}
+
+// this should not compile. To verify compile with attr commented
+#[cfg(soundness_check="mut")]
+#[test]
+fn spawn_soundness_mut_fail() {
+    async fn target<'runtime, 'param>(rt: &'runtime toy_rt::Runtime, param: &'param mut u32) {
+        *param = 42;
+    }
+
+    async fn spawn_unsound_mut(rt: &toy_rt::Runtime, flag: bool) {
+        let mut scope = toy_rt::Scope::new_named(rt, "soundness_fail_test");
+        if flag {
+            let mut value : u32 = 0;
+            // it is not ok to use '&mut value' here because the future returned by target()
+            // outlives the 'value'. This code must not compile if aiur API is sound.
+            scope.spawn(target(rt, &mut value));
+        }
+    }
+
+    toy_rt::with_runtime_in_mode(SLEEP_MODE, spawn_unsound_mut, true);
+}
+
+// this should not compile. To verify compile with attr commented
+#[cfg(soundness_check="ref")]
+#[test]
+fn spawn_soundness_ref_fail() {
+    async fn target<'runtime, 'param>(rt: &'runtime toy_rt::Runtime, param: &'param u32) {
+        println!("{}", *param);
+    }
+
+    async fn spawn_unsound_ref(rt: &toy_rt::Runtime, flag: bool) {
+        let mut scope = toy_rt::Scope::new_named(rt, "soundness_fail_test");
+        if flag {
+            let mut value : u32 = 0;
+            // it is not ok to use '&mut value' here because the future returned by target()
+            // outlives the 'value'. This code must not compile if aiur API is sound.
+            scope.spawn(target(rt, &value));
+        }
+    }
+
+    toy_rt::with_runtime_in_mode(SLEEP_MODE, spawn_unsound_ref, true);
+}
+
+
+#[test]
+fn channel_works() {
+    struct AsyncState {
+        recv_data: u32,
+    }
+
+    async fn reader<'runtime, 'state>(
+        rt: &'runtime toy_rt::Runtime,
+        rx: toy_rt::Receiver<'runtime, u32>,
+        state: &'state mut AsyncState,
+    ) {
+        state.recv_data = rx.await.unwrap();
+    }
+
+    async fn messenger(rt: &toy_rt::Runtime, _: ()) -> AsyncState {
+        let mut state = AsyncState { recv_data: 0 };
+        {
+            let mut scope = toy_rt::Scope::new_named(rt, "Messenger");
+            let (tx, rx) = toy_rt::oneshot::<u32>(&rt);
+            scope.spawn(reader(rt, rx, &mut state));
+        }
+        state
+    }
+
+    let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
+
+    assert_eq!(state.recv_data, 8);
+}

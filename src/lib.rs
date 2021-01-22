@@ -2,6 +2,7 @@
 //  / * \    aiur: the home planet for the famous executors
 // |' | '|   (c) 2020 - present, Vladimir Zvezda
 //   / \
+mod oneshot;
 mod reactor;
 mod runtime;
 mod scope;
@@ -11,6 +12,7 @@ mod with_runtime;
 
 pub mod toy_rt;
 
+pub use oneshot::oneshot;
 pub use reactor::{EventId, GetEventId, Reactor, TemporalReactor};
 pub use runtime::Runtime;
 pub use scope::Scope;
@@ -26,8 +28,24 @@ macro_rules! export_runtime {
         pub type Runtime = $crate::Runtime<$reactor>;
         pub type Scope<'runtime> = $crate::Scope<'runtime, $reactor>;
         pub type EventId = $crate::EventId;
-        pub use $crate::GetEventId;
         pub use $crate::sleep;
+        pub use $crate::GetEventId;
+
+
+        pub type Receiver<'runtime, T> = 
+            $crate::oneshot::Receiver<'runtime, T, $reactor>;
+
+        pub type Sender<'runtime, T> = 
+            $crate::oneshot::Sender<'runtime, T, $reactor>;
+
+        pub fn oneshot<'runtime, T>(
+            rt: &'runtime Runtime
+        ) -> (
+            $crate::oneshot::Sender<'runtime, T, $reactor>,
+            $crate::oneshot::Receiver<'runtime, T, $reactor>,
+        ) {
+            $crate::oneshot::oneshot::<T, $reactor>(rt)
+        }
 
         pub fn with_runtime<ReactorFn, FuncT, InitT, ResT>(
             reactor_constructor: ReactorFn,
@@ -37,7 +55,7 @@ macro_rules! export_runtime {
         where
             // async fn foo(rt: &Runtime, param: ParamT) -> ResT
             FuncT: for<'runtime> $crate::LifetimeLinkerFn<'runtime, $reactor, InitT, ResT>,
-            ReactorFn: FnOnce () -> $reactor
+            ReactorFn: FnOnce() -> $reactor,
         {
             $crate::with_runtime_base(reactor_constructor(), async_function, init)
         }
