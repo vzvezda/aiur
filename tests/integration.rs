@@ -512,13 +512,14 @@ fn channel_works() {
         let mut state = AsyncState { recv_data: 0 };
         {
             let mut scope = toy_rt::Scope::new_named(rt, "Messenger");
-            let (tx, rx) = toy_rt::oneshot::<u32>(&rt);
+            let (mut tx, rx) = toy_rt::oneshot::<u32>(&rt);
             scope.spawn(reader(rt, rx, &mut state));
+            tx.send(42).await;
         }
         state
     }
 
     let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
 
-    assert_eq!(state.recv_data, 8);
+    assert_eq!(state.recv_data, 42);
 }

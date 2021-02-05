@@ -16,6 +16,7 @@ impl ChannelId {
     }
 }
 
+#[derive(Debug)]
 struct ChannelEnd {
     data: *mut (),
     waker: Waker,
@@ -75,7 +76,9 @@ impl ChannelApi {
         event_id: EventId,
         data: *mut (),
     ) {
-        self.node.borrow_mut().send = Some(ChannelEnd::new(data, waker, event_id));
+        let ce = ChannelEnd::new(data, waker, event_id);
+        println!("ChannelApi: sender registerd: {:?}", ce);
+        self.node.borrow_mut().send = Some(ce);
     }
 
     pub(crate) fn reg_receiver(
@@ -85,39 +88,48 @@ impl ChannelApi {
         event_id: EventId,
         data: *mut (),
     ) {
-        self.node.borrow_mut().recv = Some(ChannelEnd::new(data, waker, event_id));
+        let ce = ChannelEnd::new(data, waker, event_id);
+        println!("ChannelApi: receiver registerd: {:?}", ce);
+        self.node.borrow_mut().recv = Some(ce);
     }
 
     pub(crate) fn get_event_id(&self) -> Option<EventId> {
-        println!("enter channel");
-        let node = self.node.borrow();
+        let mut node = self.node.borrow_mut();
         if node.send.is_none() || node.recv.is_none() {
-            println!("channel none");
+            println!("ChannelApi: get_event_id -> None (not connected)");
             return None;
         }
 
         if node.complete.is_none() {
-            println!("channel recv");
             // first time call
             node.recv.as_ref().unwrap().waker.wake_by_ref();
-            return Some(node.recv.as_ref().unwrap().event_id);
+            let event_id = node.recv.as_ref().unwrap().event_id;
+            println!("ChannelApi: get_event_id -> connected, poll receiver {:?}", event_id);
+            return Some(event_id);
         }
 
-        println!("channel sender");
+        let event_id = node.send.as_ref().unwrap().event_id;
         node.send.as_ref().unwrap().waker.wake_by_ref();
-        return Some(node.send.as_ref().unwrap().event_id);
+        println!("ChannelApi: get_event_id -> connected, poll sender {:?}", event_id);
+
+        node.send = None;
+        node.recv = None;
+
+        return Some(event_id);
     }
 
     pub(crate) unsafe fn exchange<T>(&self, channel_id: ChannelId) -> bool {
         if self.node.borrow().complete.is_some() {
             return self.node.borrow().complete.unwrap();
+            println!("ChannelApi: exchange<T> completed");
         }
 
-        let transfer_ok = self.node.borrow().send.is_none() || self.node.borrow().recv.is_none();
+        let transfer_ok = self.node.borrow().send.is_some() && self.node.borrow().recv.is_some();
 
         self.node.borrow_mut().complete = Some(transfer_ok);
         // Exchange was unsucessful
         if !transfer_ok {
+            println!("ChannelApi: exchange<T> unsuccesfull");
             return false;
         }
 
@@ -127,15 +139,18 @@ impl ChannelApi {
         let receiver =
             std::mem::transmute::<*mut (), *mut Option<T>>(node.recv.as_mut().unwrap().data);
         std::mem::swap(&mut *sender, &mut *receiver);
+        println!("ChannelApi: exchange<T> just happened");
 
         true
     }
 
     pub(crate) fn drop_sender(&self, _channel_id: ChannelId) {
+        println!("ChannelApi: drop sender");
         // todo
     }
 
     pub(crate) fn drop_receiver(&self, _channel_id: ChannelId) {
+        println!("ChannelApi: drop receiver");
         // todo
     }
 }

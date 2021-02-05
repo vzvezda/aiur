@@ -69,10 +69,16 @@ impl TaskMaster {
     }
 
     fn inc_tasks(&self) {
-        self.active_tasks.set(self.active_tasks.get() + 1);
+        let old_tasks = self.active_tasks.get();
+        let new_tasks = old_tasks + 1;
+        println!("inc task {} -> {}", old_tasks, new_tasks);
+        self.active_tasks.set(new_tasks);
     }
 
     fn dec_tasks(&self) {
+        let old_tasks = self.active_tasks.get();
+        let new_tasks = old_tasks - 1;
+        println!("dec task {} -> {}", old_tasks, new_tasks);
         self.active_tasks.set(self.active_tasks.get() - 1);
     }
 }

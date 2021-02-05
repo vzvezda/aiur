@@ -39,6 +39,7 @@ impl<'runtime, T, ReactorT: Reactor> Sender<'runtime, T, ReactorT> {
 
 impl<'runtime, T, ReactorT: Reactor> Drop for Sender<'runtime, T, ReactorT> {
     fn drop(&mut self) {
+        println!("sender: drop");
         self.rt.channels().drop_sender(self.channel_id);
     }
 }
@@ -73,6 +74,7 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
     }
 
     fn transmit(&mut self, waker: Waker, event_id: EventId) -> Poll<Result<(), ()>> {
+        println!("Sender: transmit");
         self.state = SenderState::Transmitting;
         self.rt.channels().reg_sender(self.channel_id, waker, event_id, 
             (&mut self.data) as *mut Option<T> as *mut ());
@@ -80,6 +82,7 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
     }
 
     fn close(&mut self, event_id: EventId) -> Poll<Result<(), ()>> {
+        println!("Sender: closing");
         if !self.rt.is_awoken(event_id) {
             return Poll::Pending;
         }
@@ -99,6 +102,7 @@ impl<'runtime, T, ReactorT: Reactor> Future for SenderFuture<'runtime, T, Reacto
     type Output = Result<(), ()>;
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Self::Output> {
+        println!("Sender: poll");
         let event_id = self.get_event_id();
 
         // Unsafe usage: this function does not moves out data from self, as required by
@@ -115,6 +119,7 @@ impl<'runtime, T, ReactorT: Reactor> Future for SenderFuture<'runtime, T, Reacto
 
 impl<'runtime, T, ReactorT: Reactor> Drop for SenderFuture<'runtime, T, ReactorT> {
     fn drop(&mut self) {
+        println!("sender future: drop");
         self.rt.channels().drop_sender(self.channel_id); // can be null()
     }
 }
@@ -147,6 +152,7 @@ impl<'runtime, T, ReactorT: Reactor> Receiver<'runtime, T, ReactorT> {
     }
 
     fn transmit(&mut self, waker: Waker, event_id: EventId) -> Poll<Result<T, bool>> {
+        println!("receiver: transmit");
         self.state = ReceiverState::Transmitting;
         self.rt.channels().reg_receiver(self.channel_id, waker, event_id, 
             (&mut self.data) as *mut Option<T> as *mut ());
@@ -154,6 +160,7 @@ impl<'runtime, T, ReactorT: Reactor> Receiver<'runtime, T, ReactorT> {
     }
 
     fn close(&mut self, event_id: EventId) -> Poll<Result<T, bool>> {
+        println!("receiver: close");
         if !self.rt.is_awoken(event_id) {
             return Poll::Pending;
         }
@@ -169,6 +176,7 @@ impl<'runtime, T, ReactorT: Reactor> Receiver<'runtime, T, ReactorT> {
 
 impl<'runtime, T, ReactorT: Reactor> Drop for Receiver<'runtime, T, ReactorT> {
     fn drop(&mut self) {
+        println!("receiver: drop");
         self.rt.channels().drop_receiver(self.channel_id);
     }
 }
@@ -178,6 +186,7 @@ impl<'runtime, T, ReactorT: Reactor> Future for Receiver<'runtime, T, ReactorT> 
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Self::Output> {
         let event_id = self.get_event_id();
+        println!("receiver: poll");
 
         // Unsafe usage: this function does not moves out data from self, as required by
         // Pin::map_unchecked_mut().

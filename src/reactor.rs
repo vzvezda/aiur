@@ -22,7 +22,7 @@ pub trait TemporalReactor : Reactor {
 
 /// EventId is a reactor's id for the event that was awoken.
 ///
-/// The same waker can be scheduled to awake on many i/o events (e.g. via select!/join! macro
+/// The same waker can be scheduled to awake on many i/o events (typically with select!/join! macro
 /// or by other means) and this id is kind of cheap method for leaf future to verify if execultor
 /// has invoked the poll() method because this future was awoken.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
