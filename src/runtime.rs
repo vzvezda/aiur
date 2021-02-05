@@ -6,6 +6,7 @@ use std::cell::{Cell, RefCell};
 use std::future::Future;
 use std::collections::VecDeque;
 
+use crate::channel_api::ChannelApi;
 use crate::reactor::{EventId, Reactor};
 use crate::task::{allocate_void_task, construct_task, Completion, ITask};
 
@@ -74,8 +75,8 @@ impl TaskMaster {
     fn dec_tasks(&self) {
         self.active_tasks.set(self.active_tasks.get() - 1);
     }
-
 }
+
 
 //
 //
@@ -83,6 +84,7 @@ pub struct Runtime<ReactorT> {
     reactor: ReactorT,
     awoken: Awoken,
     task_master: TaskMaster,
+    channel_api: ChannelApi,
 }
 
 impl<ReactorT> Runtime<ReactorT>
@@ -94,6 +96,7 @@ where
             reactor,
             awoken: Awoken::new(),
             task_master: TaskMaster::new(),
+            channel_api: ChannelApi::new(),
         }
     }
 
@@ -124,6 +127,10 @@ where
         unsafe { result.assume_init() }
     }
 
+    pub(crate) fn channels(&self) -> &ChannelApi {
+        &self.channel_api
+    }
+
     // Adds a new future as a task in a new list that is to be spawn on a spawn_phase
     pub(crate) fn spawn<'runtime, 'scope, F>(&'runtime self, f: F) 
         -> *mut (dyn ITask + 'static)
@@ -143,6 +150,25 @@ where
     }
 
     pub(crate) fn channel_phase(&self) {
+        // do the channel exchange until there is no more channels 
+        loop {
+            // TODO: this is a copy/paste of poll_phase code, we need to unify this
+
+            if let Some(event_id) = self.channels().get_event_id() {
+                let awoken_task = self.awoken.itask_ptr.get().unwrap();
+                self.awoken.event_id.set(event_id);
+
+                if unsafe { (*awoken_task).poll() } == Completion::Done {
+                    println!("Completed task");
+                    unsafe { (*awoken_task).on_completed(); }
+                    self.task_master.dec_tasks();
+                    // TODO: deallocate if &addr != &task
+                } else {
+                }
+            } else {
+                break;
+            }
+        }
     }
 
     //

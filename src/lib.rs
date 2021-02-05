@@ -9,6 +9,7 @@ mod scope;
 mod task;
 mod timer;
 mod with_runtime;
+mod channel_api;
 
 pub mod toy_rt;
 

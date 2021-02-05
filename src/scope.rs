@@ -18,10 +18,12 @@ pub struct Scope<'runtime, ReactorT> where ReactorT: Reactor {
     // interconnected to each other.
     // task_list: Option<*mut (dyn ITask + 'runtime)>,
 }
+/*
 pub struct JoinHandle<'scope, 'runtime, ReactorT> where ReactorT: Reactor {
     scope: &'scope Scope<'runtime, ReactorT>,
     task: *mut (dyn ITask + 'scope)
 }
+*/
 
 impl<'runtime, ReactorT> Scope<'runtime, ReactorT> where ReactorT: Reactor {
     pub fn new(rt: &'runtime Runtime<ReactorT>) -> Self {
@@ -46,7 +48,7 @@ impl<'runtime, ReactorT> Scope<'runtime, ReactorT> where ReactorT: Reactor {
     {
         let task: *mut (dyn ITask + 'runtime) = self.rt.spawn(future);
         self.tasks.borrow_mut().push(task);
-        ///self.tasks.push(task);
+        //self.tasks.push(task);
         println!("task {} has been spawn", self.name);
         //JoinHandle { scope: &self, task }
     }
@@ -64,6 +66,7 @@ impl<'runtime, ReactorT> Drop for Scope<'runtime, ReactorT> where ReactorT: Reac
         }) {
             println!("Scope loop {}", self.name);
             self.rt.spawn_phase();
+            self.rt.channel_phase();
             self.rt.poll_phase();
         }
 
