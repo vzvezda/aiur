@@ -120,8 +120,8 @@ impl ChannelApi {
 
     pub(crate) unsafe fn exchange<T>(&self, channel_id: ChannelId) -> bool {
         if self.node.borrow().complete.is_some() {
-            return self.node.borrow().complete.unwrap();
             println!("ChannelApi: exchange<T> completed");
+            return self.node.borrow().complete.unwrap();
         }
 
         let transfer_ok = self.node.borrow().send.is_some() && self.node.borrow().recv.is_some();

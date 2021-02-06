@@ -11,6 +11,19 @@ use crate::channel_api::ChannelId;
 use crate::reactor::{EventId, GetEventId, Reactor};
 use crate::runtime::Runtime;
 
+// -----------------------------------------------------------------------------------------------
+
+/// Creates a new channel and returns an pair of (sender, receiver).
+pub fn oneshot<'runtime, T, ReactorT: Reactor>(
+    rt: &'runtime Runtime<ReactorT>,
+) -> (
+    Sender<'runtime, T, ReactorT>,
+    Receiver<'runtime, T, ReactorT>,
+) {
+    let channel_id = rt.channels().create();
+    (Sender::new(rt, channel_id), Receiver::new(rt, channel_id))
+}
+
 pub struct RecvError;
 
 // -----------------------------------------------------------------------------------------------
@@ -43,8 +56,7 @@ impl<'runtime, T, ReactorT: Reactor> Sender<'runtime, T, ReactorT> {
         Sender { inner: SenderInner::Created(RuntimeChannel::new(rt, channel_id)) }
     }
 
-    // TODO: better result;
-    pub async fn send(&mut self, value: T) -> Result<(), ()> {
+    pub async fn send(&mut self, value: T) -> Result<(), T> {
         let prev = std::mem::replace(&mut self.inner, SenderInner::Sent(PhantomData));
 
         match prev {
@@ -79,7 +91,7 @@ struct SenderFuture<'runtime, T, ReactorT: Reactor> {
     rt: &'runtime Runtime<ReactorT>,
     channel_id: ChannelId,
     data: Option<T>,
-    result: Option<Result<(), ()>>,
+    result: Option<Result<(), T>>,
     state: SenderState,
 }
 
@@ -97,7 +109,7 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
         }
     }
 
-    fn transmit(&mut self, waker: Waker, event_id: EventId) -> Poll<Result<(), ()>> {
+    fn transmit(&mut self, waker: Waker, event_id: EventId) -> Poll<Result<(), T>> {
         println!("Sender: transmit");
         self.state = SenderState::Transmitting;
         self.rt.channels().reg_sender(
@@ -109,7 +121,7 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
         Poll::Pending
     }
 
-    fn close(&mut self, event_id: EventId) -> Poll<Result<(), ()>> {
+    fn close(&mut self, event_id: EventId) -> Poll<Result<(), T>> {
         println!("Sender: closing");
         if !self.rt.is_awoken(event_id) {
             return Poll::Pending;
@@ -119,15 +131,16 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
         if unsafe { self.rt.channels().exchange::<T>(self.channel_id) } {
             self.result = Some(Ok(()));
         } else {
-            self.result = Some(Err(()));
+            // TODO: unwrap safety
+            self.result = Some(Err(self.data.take().unwrap()));
         }
 
-        Poll::Ready(self.result.unwrap())
+        Poll::Ready(self.result.take().unwrap())
     }
 }
 
 impl<'runtime, T, ReactorT: Reactor> Future for SenderFuture<'runtime, T, ReactorT> {
-    type Output = Result<(), ()>;
+    type Output = Result<(), T>;
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Self::Output> {
         println!("Sender: poll");
@@ -140,7 +153,8 @@ impl<'runtime, T, ReactorT: Reactor> Future for SenderFuture<'runtime, T, Reacto
         return match this.state {
             SenderState::Created => this.transmit(ctx.waker().clone(), event_id),
             SenderState::Transmitting => this.close(event_id),
-            SenderState::Done => Poll::Ready(this.result.unwrap()),
+            // second call
+            SenderState::Done => Poll::Ready(this.result.take().unwrap()),
         };
     }
 }
@@ -231,15 +245,3 @@ impl<'runtime, T, ReactorT: Reactor> Future for Receiver<'runtime, T, ReactorT> 
     }
 }
 
-// -----------------------------------------------------------------------------------------------
-
-/// Creates a new channel and returns an pair of (sender, receiver).
-pub fn oneshot<'runtime, T, ReactorT: Reactor>(
-    rt: &'runtime Runtime<ReactorT>,
-) -> (
-    Sender<'runtime, T, ReactorT>,
-    Receiver<'runtime, T, ReactorT>,
-) {
-    let channel_id = rt.channels().create();
-    (Sender::new(rt, channel_id), Receiver::new(rt, channel_id))
-}
