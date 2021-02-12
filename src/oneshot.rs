@@ -34,9 +34,8 @@ pub fn oneshot<'runtime, T, ReactorT: Reactor>(
 }
 
 /// Error type returned by Receiver: the only possible error is channel closed on sender's side.
-#[derive(Debug)]
+#[derive(Debug)] // Debug required for Result.unwrap()
 pub struct RecvError;
-
 
 // -----------------------------------------------------------------------------------------------
 // RuntimeChannel: it is commonly used here: runtime and channel_id coupled together.
@@ -51,21 +50,15 @@ impl<'runtime, ReactorT: Reactor> RuntimeChannel<'runtime, ReactorT> {
     }
 
     fn reg_sender(&self, waker: &Waker, sender_event_id: EventId, pointer: *mut ()) {
-        self.rt.channels().reg_sender(
-            self.channel_id,
-            waker.clone(),
-            sender_event_id,
-            pointer,
-        );
+        self.rt
+            .channels()
+            .reg_sender(self.channel_id, waker.clone(), sender_event_id, pointer);
     }
 
     fn reg_receiver(&self, waker: &Waker, receiver_event_id: EventId, pointer: *mut ()) {
-        self.rt.channels().reg_receiver(
-            self.channel_id,
-            waker.clone(),
-            receiver_event_id,
-            pointer,
-        );
+        self.rt
+            .channels()
+            .reg_receiver(self.channel_id, waker.clone(), receiver_event_id, pointer);
     }
 
     unsafe fn exchange<T>(&self) -> bool {
@@ -73,13 +66,48 @@ impl<'runtime, ReactorT: Reactor> RuntimeChannel<'runtime, ReactorT> {
     }
 
     fn unregister_sender(&self) {
-        self.rt.channels().drop_sender(self.channel_id);
+        self.rt.channels().cancel_sender(self.channel_id);
     }
 
     fn unregister_receiver(&self) {
-        self.rt.channels().drop_receiver(self.channel_id);
+        self.rt.channels().cancel_receiver(self.channel_id);
     }
 }
+
+trait Side {
+    fn register(&self, waker: &Waker, event_id: EventId, pointer: *mut ());
+    fn cancel(&self);
+    unsafe fn exchange<T>(&self) -> bool;
+}
+
+struct RecvChannelApi<'runtime, ReactorT: Reactor> {
+    rt: &'runtime Runtime<ReactorT>,
+    channel_id: ChannelId,
+}
+
+impl<'runtime, ReactorT: Reactor> RecvChannelApi<'runtime, ReactorT> {
+    fn new(rt: &'runtime Runtime<ReactorT>, channel_id: ChannelId) -> Self {
+        RecvChannelApi { rt, channel_id }
+    }
+}
+
+impl<'runtime, ReactorT: Reactor> Side for RecvChannelApi<'runtime, ReactorT> {
+    fn register(&self, waker: &Waker, receiver_event_id: EventId, pointer: *mut ()) {
+        self.rt
+            .channels()
+            .reg_receiver(self.channel_id, waker.clone(), receiver_event_id, pointer);
+    }
+
+    fn cancel(&self) {
+        self.rt.channels().cancel_receiver(self.channel_id);
+    }
+
+    unsafe fn exchange<T>(&self) -> bool {
+        self.rt.channels().exchange::<T>(self.channel_id)
+    }
+}
+
+
 
 // -----------------------------------------------------------------------------------------------
 // Sender's end of the channel
@@ -95,10 +123,12 @@ enum SenderInner<'runtime, T, ReactorT: Reactor> {
 
 impl<'runtime, T, ReactorT: Reactor> Sender<'runtime, T, ReactorT> {
     fn new(rt: &'runtime Runtime<ReactorT>, channel_id: ChannelId) -> Self {
-        Sender { inner: SenderInner::Created(RuntimeChannel::new(rt, channel_id)) }
+        Sender {
+            inner: SenderInner::Created(RuntimeChannel::new(rt, channel_id)),
+        }
     }
 
-    /// Sends value to the receiver side of the channel. If receiver end is already closed, 
+    /// Sends value to the receiver side of the channel. If receiver end is already closed,
     /// the original value returned as error in result.
     pub async fn send(&mut self, value: T) -> Result<(), T> {
         let prev = std::mem::replace(&mut self.inner, SenderInner::Sent(PhantomData));
@@ -142,7 +172,7 @@ impl<'runtime, T, ReactorT: Reactor> GetEventId for SenderFuture<'runtime, T, Re
 
 impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
     fn new(rc: &RuntimeChannel<'runtime, ReactorT>, value: T) -> Self {
-        SenderFuture { 
+        SenderFuture {
             runtime_channel: RuntimeChannel::new(rc.rt, rc.channel_id),
             data: Some(value),
             state: FutureState::Created,
@@ -157,7 +187,8 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
         self.runtime_channel.reg_sender(
             waker,
             event_id,
-            (&mut self.data) as *mut Option<T> as *mut ());
+            (&mut self.data) as *mut Option<T> as *mut (),
+        );
 
         Poll::Pending
     }
@@ -174,7 +205,7 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
             Poll::Ready(Ok(()))
         } else {
             Poll::Ready(Err(self.data.take().unwrap()))
-        }
+        };
     }
 }
 
@@ -192,8 +223,9 @@ impl<'runtime, T, ReactorT: Reactor> Future for SenderFuture<'runtime, T, Reacto
         return match this.state {
             FutureState::Created => this.transmit(&ctx.waker(), event_id),
             FutureState::Exchanging => this.close(event_id),
-            FutureState::Closed => panic!(
-                "aiur: oneshot::SenderFuture was polled after completion."),
+            FutureState::Closed => {
+                panic!("aiur: oneshot::SenderFuture was polled after completion.")
+            }
         };
     }
 }
@@ -201,13 +233,13 @@ impl<'runtime, T, ReactorT: Reactor> Future for SenderFuture<'runtime, T, Reacto
 impl<'runtime, T, ReactorT: Reactor> Drop for SenderFuture<'runtime, T, ReactorT> {
     fn drop(&mut self) {
         modtrace!("sender future: drop");
-        self.runtime_channel.unregister_sender(); 
+        self.runtime_channel.unregister_sender();
     }
 }
 
 // -----------------------------------------------------------------------------------------------
 pub struct Receiver<'runtime, T, ReactorT: Reactor> {
-    runtime_channel: RuntimeChannel<'runtime, ReactorT>,
+    channel_api: RecvChannelApi<'runtime, ReactorT>,
     state: FutureState,
     data: Option<T>,
 }
@@ -217,7 +249,7 @@ impl<'runtime, T, ReactorT: Reactor> GetEventId for Receiver<'runtime, T, Reacto
 impl<'runtime, T, ReactorT: Reactor> Receiver<'runtime, T, ReactorT> {
     fn new(rt: &'runtime Runtime<ReactorT>, channel_id: ChannelId) -> Self {
         Receiver {
-            runtime_channel: RuntimeChannel::new(rt, channel_id),
+            channel_api: RecvChannelApi::new(rt, channel_id),
             state: FutureState::Created,
             data: None,
         }
@@ -226,7 +258,7 @@ impl<'runtime, T, ReactorT: Reactor> Receiver<'runtime, T, ReactorT> {
     fn transmit(&mut self, waker: &Waker, event_id: EventId) -> Poll<Result<T, RecvError>> {
         modtrace!("ReceiverFut: transmit");
         self.state = FutureState::Exchanging;
-        self.runtime_channel.reg_receiver(
+        self.channel_api.register(
             waker,
             event_id,
             (&mut self.data) as *mut Option<T> as *mut (),
@@ -237,12 +269,12 @@ impl<'runtime, T, ReactorT: Reactor> Receiver<'runtime, T, ReactorT> {
 
     fn close(&mut self, event_id: EventId) -> Poll<Result<T, RecvError>> {
         modtrace!("receiver: close");
-        if !self.runtime_channel.rt.is_awoken(event_id) {
+        if !self.channel_api.rt.is_awoken(event_id) {
             return Poll::Pending;
         }
 
         self.state = FutureState::Closed;
-        return if unsafe { self.runtime_channel.exchange::<T>() } {
+        return if unsafe { self.channel_api.exchange::<T>() } {
             Poll::Ready(Ok(self.data.take().unwrap()))
         } else {
             Poll::Ready(Err(RecvError))
@@ -253,7 +285,7 @@ impl<'runtime, T, ReactorT: Reactor> Receiver<'runtime, T, ReactorT> {
 impl<'runtime, T, ReactorT: Reactor> Drop for Receiver<'runtime, T, ReactorT> {
     fn drop(&mut self) {
         modtrace!("receiver: drop");
-        self.runtime_channel.unregister_receiver();
+        self.channel_api.cancel();
     }
 }
 
@@ -275,4 +307,3 @@ impl<'runtime, T, ReactorT: Reactor> Future for Receiver<'runtime, T, ReactorT> 
         };
     }
 }
-

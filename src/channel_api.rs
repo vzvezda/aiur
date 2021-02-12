@@ -144,12 +144,12 @@ impl ChannelApi {
         true
     }
 
-    pub(crate) fn drop_sender(&self, _channel_id: ChannelId) {
+    pub(crate) fn cancel_sender(&self, _channel_id: ChannelId) {
         println!("ChannelApi: drop sender");
         // todo
     }
 
-    pub(crate) fn drop_receiver(&self, _channel_id: ChannelId) {
+    pub(crate) fn cancel_receiver(&self, _channel_id: ChannelId) {
         println!("ChannelApi: drop receiver");
         // todo
     }
