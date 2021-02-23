@@ -2,11 +2,34 @@
 //  / * \    aiur: the home planet for the famous executors
 // |' | '|   (c) 2020 - present, Vladimir Zvezda
 //   / \
+//
+// This module is about oneshot channel support in Runtime. This is a pub(crate)
+// visibility (with unsafe's), the exported API is in oneshot.rs module (which is safe).
+//
+// The oneshot runtime support is quite simple: both sender and receiver registers the
+// pointer to the data for exchange and their Waker and EventId:
+//
+// (Sender<*mut(), EventId, Waker), Receiver<*mut, EventId, Waker>)
+//
+// As soon as both ends has their data registered, runtime wakes the Receiver, then it wakes
+// the Sender.
 use std::cell::RefCell;
 use std::task::Waker;
 
 use crate::reactor::EventId;
 
+const TRACE: bool = true;
+
+
+// tracing for development
+macro_rules! modtrace {
+    ($fmt_str:tt)
+        => ( if (TRACE) { println!(concat!("aiur::", $fmt_str)) });
+    ($fmt_str:tt, $($x:expr),* )
+        => ( if (TRACE) { println!(concat!("aiur::", $fmt_str), $($x),* ) });
+}
+
+// Channel handle used by this low level channel API (which is only has crate visibility)
 #[derive(Copy, Clone)]
 pub(crate) struct ChannelId(u32);
 
@@ -16,16 +39,17 @@ impl ChannelId {
     }
 }
 
+// Registration info provided for both sender and receiver.
 #[derive(Debug)]
-struct ChannelEnd {
+struct RegInfo {
     data: *mut (),
     waker: Waker,
     event_id: EventId,
 }
 
-impl ChannelEnd {
+impl RegInfo {
     fn new(data: *mut (), waker: Waker, event_id: EventId) -> Self {
-        ChannelEnd {
+        RegInfo {
             data,
             waker,
             event_id,
@@ -33,124 +57,220 @@ impl ChannelEnd {
     }
 }
 
-struct ChannelNode {
-    sender_alive: bool,
-    recv_alive: bool,
-    complete: Option<bool>,
-    recv: Option<ChannelEnd>,
-    send: Option<ChannelEnd>,
+// Stage of linking the receiver and sender ends.
+#[derive(Debug)]
+enum Linking {
+    Created,
+    Registered(RegInfo),
+    Exchanged,
+    Dropped,
 }
 
-impl ChannelNode {
+struct OneshotNode {
+    sender: Linking,
+    receiver: Linking,
+    // we need just one more bit for our state machine
+    recv_exchanged: bool,
+}
+
+impl OneshotNode {
     fn new() -> Self {
-        ChannelNode {
-            sender_alive: true,
-            recv_alive: true,
-            complete: None,
-            recv: None,
-            send: None,
+        Self {
+            sender: Linking::Created,
+            receiver: Linking::Created,
+            recv_exchanged: false,
         }
     }
 }
 
 pub(crate) struct ChannelApi {
-    node: RefCell<ChannelNode>,
+    // TODO: support many channels
+    node: RefCell<OneshotNode>,
 }
 
 impl ChannelApi {
     pub(crate) fn new() -> Self {
         ChannelApi {
-            node: RefCell::new(ChannelNode::new()),
+            node: RefCell::new(OneshotNode::new()),
         }
     }
 
     pub(crate) fn create(&self) -> ChannelId {
-        // todo
+        // TODO: support many channels
         ChannelId(1)
     }
 
     pub(crate) fn reg_sender(
         &self,
-        channel_id: ChannelId,
+        _channel_id: ChannelId,
         waker: Waker,
         event_id: EventId,
         data: *mut (),
     ) {
-        let ce = ChannelEnd::new(data, waker, event_id);
-        println!("ChannelApi: sender registerd: {:?}", ce);
-        self.node.borrow_mut().send = Some(ce);
+        let reg_info = RegInfo::new(data, waker, event_id);
+        modtrace!("ChannelApi: sender registration: {:?}", reg_info);
+        self.node.borrow_mut().sender = Linking::Registered(reg_info);
     }
 
     pub(crate) fn reg_receiver(
         &self,
-        channel_id: ChannelId,
+        _channel_id: ChannelId,
         waker: Waker,
         event_id: EventId,
         data: *mut (),
     ) {
-        let ce = ChannelEnd::new(data, waker, event_id);
-        println!("ChannelApi: receiver registerd: {:?}", ce);
-        self.node.borrow_mut().recv = Some(ce);
+        let reg_info = RegInfo::new(data, waker, event_id);
+        modtrace!("ChannelApi: receiver registration: {:?}", reg_info);
+        self.node.borrow_mut().receiver = Linking::Registered(reg_info);
     }
 
+    /*
+     *  Ok, here is the oneshot channel state machine:
+     *
+     *     +--->(D,D)<---+           +---->(D,D)<----+
+     *     |      ^      |           |       ^       |
+     *     +      +      +           +       +       +
+     *   (D,E)<+(D,R}<+(D,C)<--+-->(C,D)+->{R,D)+->(E,D)
+     *     ^            ^ ^    |    ^ ^              ^
+     *     |            | |    +    | |              |
+     *     |            +---+(C,C)+---+              |
+     *     |              +   + +   +                |
+     *     |            (R,C)<+ +>(C,R)              |
+     *     |              +         +                |
+     *     |              +->(R,R}<-+                |
+     *     |                   |                     |
+     *     |                 {R,E)+->{R,D*)+--------->
+     *     |                   |                     |
+     *     |                 (E,E)                   |
+     *     |                   +                     |
+     *     |                   |                     |
+     *     +-------------------+---------------------+
+     *
+     *     The state machine is sender/receiver:
+     *        * C: Created
+     *        * R: Registered
+     *        * E: Exchanged
+     *        * D: Dropped
+     *
+     *   Everything starts from (C,C) and in (D,D) channel resource are released. (D,D) has
+     *   two instances on the diagram just for clarity.
+     *
+     *   get_event_id():
+     *      * returns None when state described in parentheses, for example (C,C)
+     *      * the curly brace means sender or receiver should be awoken (R,R} - awake
+     *        the receiver side. In response to awake channel future expected to invoke
+     *        exchange(), but future drop also expected.
+     *      * D* is a special state indicates that transfer was succesful (e.g. receiver was
+     *        dropped just after it had value received).
+     */
+
     pub(crate) fn get_event_id(&self) -> Option<EventId> {
-        let mut node = self.node.borrow_mut();
-        if node.send.is_none() || node.recv.is_none() {
-            println!("ChannelApi: get_event_id -> None (not connected)");
+        let node = self.node.borrow();
+
+        // nobody to awake when there is a channel side in "Created" state
+        if matches!(node.sender, Linking::Created) || matches!(node.receiver, Linking::Created) {
             return None;
         }
 
-        if node.complete.is_none() {
-            // first time call
-            node.recv.as_ref().unwrap().waker.wake_by_ref();
-            let event_id = node.recv.as_ref().unwrap().event_id;
-            println!("ChannelApi: get_event_id -> connected, poll receiver {:?}", event_id);
-            return Some(event_id);
+        // first awake the receiver. sender cannot be in Created state, other state like
+        // Registered or Dropped are ok.
+        match &node.receiver {
+            Linking::Registered(ref rx_reg_info) => {
+                rx_reg_info.waker.wake_by_ref();
+                return Some(rx_reg_info.event_id);
+            }
+            _ => (),
         }
 
-        let event_id = node.send.as_ref().unwrap().event_id;
-        node.send.as_ref().unwrap().waker.wake_by_ref();
-        println!("ChannelApi: get_event_id -> connected, poll sender {:?}", event_id);
+        // Awake the sender, the receiver cannnot be in Created state, but other states like
+        // Exhanged or Dropped are ok.
+        match &node.sender {
+            Linking::Registered(ref tx_reg_info) => {
+                tx_reg_info.waker.wake_by_ref();
+                return Some(tx_reg_info.event_id);
+            }
+            _ => (),
+        }
 
-        node.send = None;
-        node.recv = None;
+        // Some of the pairs of states are impossible, for example it is not possible
+        // to have a channel side exchanged while another end is not yet registered.
+        debug_assert!(
+            match (&node.sender, &node.receiver) {
+                (Linking::Created, Linking::Exchanged)
+                | (Linking::Exchanged, Linking::Created)
+                | (Linking::Exchanged, Linking::Registered(..)) => false,
+                _ => true,
+            },
+            concat!(
+                "aiur: oneshot::get_event_id() invoked in unexpected state. ",
+                "Sender: {:?}, receiver: {:?}"
+            ),
+            node.sender,
+            node.receiver,
+        );
 
-        return Some(event_id);
+        // Othere states like (Exchanged, Exchanged) or (Dropped, Exchanged) are possible
+        // and not produce any events, so None is returned.
+        return None;
+    }
+
+    unsafe fn exhange_impl<T>(tx_data: *mut (), rx_data: *mut ()) {
+        let mut tx_data = std::mem::transmute::<*mut (), *mut Option<T>>(tx_data);
+        let mut rx_data = std::mem::transmute::<*mut (), *mut Option<T>>(rx_data);
+        std::mem::swap(&mut *tx_data, &mut *rx_data);
+
+        modtrace!("ChannelApi: exchange<T> just happened");
     }
 
     pub(crate) unsafe fn exchange<T>(&self, channel_id: ChannelId) -> bool {
-        if self.node.borrow().complete.is_some() {
-            println!("ChannelApi: exchange<T> completed");
-            return self.node.borrow().complete.unwrap();
-        }
-
-        let transfer_ok = self.node.borrow().send.is_some() && self.node.borrow().recv.is_some();
-
-        self.node.borrow_mut().complete = Some(transfer_ok);
-        // Exchange was unsucessful
-        if !transfer_ok {
-            println!("ChannelApi: exchange<T> unsuccesfull");
-            return false;
-        }
-
         let mut node = self.node.borrow_mut();
-        let sender =
-            std::mem::transmute::<*mut (), *mut Option<T>>(node.send.as_mut().unwrap().data);
-        let receiver =
-            std::mem::transmute::<*mut (), *mut Option<T>>(node.recv.as_mut().unwrap().data);
-        std::mem::swap(&mut *sender, &mut *receiver);
-        println!("ChannelApi: exchange<T> just happened");
 
-        true
+        modtrace!("Exchange {:?},{:?}", node.sender, node.receiver);
+
+        match (&node.sender, &node.receiver) {
+            (Linking::Registered(..), Linking::Exchanged) => {
+                node.sender = Linking::Exchanged;
+                return true;
+            }
+            (Linking::Registered(..), Linking::Dropped) => {
+                node.sender = Linking::Exchanged;
+                // Receiver can be dropped after exchange happened
+                return node.recv_exchanged;
+            }
+            (Linking::Dropped, Linking::Registered(..)) => {
+                node.receiver = Linking::Exchanged;
+                return false;
+            }
+            (Linking::Registered(ref tx), Linking::Registered(ref rx)) => {
+                Self::exhange_impl::<T>(tx.data, rx.data);
+                node.receiver = Linking::Exchanged;
+                node.recv_exchanged = true;
+                return true;
+            }
+            _ =>
+            // some kind of bug in the code, the Oneshot futures should not make
+            // this happen.
+            {
+                panic!(
+                    concat!(
+                        "aiur: oneshot::exhange() invoked in unexpected state. ",
+                        "Sender: {:?}, receiver: {:?}"
+                    ),
+                    node.sender, node.receiver
+                )
+            }
+        }
     }
 
     pub(crate) fn cancel_sender(&self, _channel_id: ChannelId) {
-        println!("ChannelApi: drop sender");
-        // todo
+        modtrace!("ChannelApi: drop sender");
+        let mut node = self.node.borrow_mut();
+        node.sender = Linking::Dropped;
     }
 
     pub(crate) fn cancel_receiver(&self, _channel_id: ChannelId) {
-        println!("ChannelApi: drop receiver");
-        // todo
+        modtrace!("ChannelApi: drop receiver");
+        let mut node = self.node.borrow_mut();
+        node.receiver = Linking::Dropped;
     }
 }

@@ -20,7 +20,7 @@ macro_rules! modtrace {
 }
 
 // -----------------------------------------------------------------------------------------------
-// Public oneshot()
+// Public oneshot() 
 
 /// Creates a new oneshot channel and returns ther pair of (sender, receiver).
 pub fn oneshot<'runtime, T, ReactorT: Reactor>(
@@ -186,7 +186,7 @@ impl<'runtime, T, ReactorT: Reactor> Future for SenderFuture<'runtime, T, Reacto
         let this = unsafe { self.get_unchecked_mut() };
 
         return match this.state {
-            FutureState::Created => this.transmit(&ctx.waker(), event_id),
+            FutureState::Created => this.transmit(&ctx.waker(), event_id), // always Pending
             FutureState::Exchanging => this.close(event_id),
             FutureState::Closed => {
                 panic!("aiur: oneshot::SenderFuture was polled after completion.")
@@ -203,6 +203,10 @@ impl<'runtime, T, ReactorT: Reactor> Drop for SenderFuture<'runtime, T, ReactorT
 }
 
 // -----------------------------------------------------------------------------------------------
+// Receiver (Future)
+//
+// Receiver has a lot of copy paste with SenderFuture, but unification produced more code and
+// less clarity.
 pub struct Receiver<'runtime, T, ReactorT: Reactor> {
     runtime_channel: RuntimeChannel<'runtime, ReactorT>,
     state: FutureState,
@@ -266,9 +270,11 @@ impl<'runtime, T, ReactorT: Reactor> Future for Receiver<'runtime, T, ReactorT> 
         let this = unsafe { self.get_unchecked_mut() };
 
         return match this.state {
-            FutureState::Created => this.transmit(&ctx.waker(), event_id),
+            FutureState::Created => this.transmit(&ctx.waker(), event_id), // always Pending
             FutureState::Exchanging => this.close(event_id),
-            FutureState::Closed => Poll::Ready(Err(RecvError)),
+            FutureState::Closed => {
+                panic!("aiur: oneshot::Receiver was polled after completion.")
+            }
         };
     }
 }
