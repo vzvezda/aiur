@@ -2,6 +2,9 @@
 //  / * \    aiur: the home planet for the famous executors
 // |' | '|   (c) 2020 - present, Vladimir Zvezda
 //   / \
+#[macro_use]
+mod modtrace_macro;
+
 mod oneshot;
 mod reactor;
 mod runtime;

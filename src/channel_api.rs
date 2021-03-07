@@ -18,16 +18,7 @@ use std::task::Waker;
 
 use crate::reactor::EventId;
 
-const TRACE: bool = true;
-
-
-// tracing for development
-macro_rules! modtrace {
-    ($fmt_str:tt)
-        => ( if (TRACE) { println!(concat!("aiur::", $fmt_str)) });
-    ($fmt_str:tt, $($x:expr),* )
-        => ( if (TRACE) { println!(concat!("aiur::", $fmt_str), $($x),* ) });
-}
+const MODTRACE: bool = true;
 
 // Channel handle used by this low level channel API (which is only has crate visibility)
 #[derive(Copy, Clone)]
@@ -58,7 +49,6 @@ impl RegInfo {
 }
 
 // Stage of linking the receiver and sender ends.
-#[derive(Debug)]
 enum Linking {
     Created,
     Registered(RegInfo),
@@ -66,10 +56,22 @@ enum Linking {
     Dropped,
 }
 
+// Debug 
+impl std::fmt::Debug for Linking {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Linking::Created => f.write_str("Created"),
+            Linking::Registered(..)=> f.write_str("Registered"),
+            Linking::Exchanged => f.write_str("Exchanged"),
+            Linking::Dropped => f.write_str("Dropped"),
+        }
+    }
+}
+
 struct OneshotNode {
     sender: Linking,
     receiver: Linking,
-    // we need just one more bit for our state machine
+    // we need just one more bit for our state machine, see state machine diagram below
     recv_exchanged: bool,
 }
 
@@ -158,8 +160,8 @@ impl ChannelApi {
      *   get_event_id():
      *      * returns None when state described in parentheses, for example (C,C)
      *      * the curly brace means sender or receiver should be awoken (R,R} - awake
-     *        the receiver side. In response to awake channel future expected to invoke
-     *        exchange(), but future drop also expected.
+     *        the receiver side. In response to the awake, the channel future is expected 
+     *        to invoke exchange(), but future drop also possible.
      *      * D* is a special state indicates that transfer was succesful (e.g. receiver was
      *        dropped just after it had value received).
      */

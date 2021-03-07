@@ -5,6 +5,7 @@
 
 // Use the toy runtime
 use aiur::toy_rt::{self};
+use super::future_utils::{self};
 
 // With emulated sleep test run instantly, actual sleep actually wait for specified
 // amount of time.
@@ -13,7 +14,7 @@ use aiur::toy_rt::{self};
 const SLEEP_MODE: toy_rt::SleepMode = toy_rt::SleepMode::Emulated;
 
 #[test]
-fn channel_works() {
+fn channel_works_spawn() {
     struct AsyncState {
         recv_data: u32,
     }
@@ -41,6 +42,36 @@ fn channel_works() {
 
     assert_eq!(state.recv_data, 42);
 }
+
+#[test]
+fn channel_works_select() {
+    struct AsyncState {
+        recv_data: u32,
+    }
+
+    async fn reader<'runtime, 'state>(
+        rx: toy_rt::Receiver<'runtime, u32>,
+        state: &'state mut AsyncState,
+    ) {
+        state.recv_data = rx.await.unwrap();
+    }
+
+    async fn writer<'runtime>(mut tx: toy_rt::Sender<'runtime, u32>) {
+        tx.send(42).await;
+    }
+
+    async fn messenger(rt: &toy_rt::Runtime, _: ()) -> AsyncState {
+        let mut state = AsyncState { recv_data: 0 };
+        let (mut tx, rx) = toy_rt::oneshot::<u32>(&rt);
+        future_utils::any2void(reader(rx, &mut state), writer(tx)).await;
+        state
+    }
+
+    let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
+
+    assert_eq!(state.recv_data, 42);
+}
+
 
 #[test]
 fn channel_recv_dropped() {
