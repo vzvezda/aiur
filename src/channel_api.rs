@@ -11,13 +11,14 @@
 //
 // (Sender<*mut(), EventId, Waker), Receiver<*mut, EventId, Waker>)
 //
-// As soon as both ends has their data registered, runtime wakes the Receiver, then it wakes
-// the Sender.
+// As soon as both channel sides has their data registered, runtime wakes the
+// Receiver to get the data, then it wakes the Sender.
 use std::cell::RefCell;
 use std::task::Waker;
 
 use crate::reactor::EventId;
 
+// enable/disable output of modtrace! macro
 const MODTRACE: bool = true;
 
 // Channel handle used by this low level channel API (which is only has crate visibility)
@@ -31,7 +32,7 @@ impl ChannelId {
 }
 
 // Registration info provided for both sender and receiver.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct RegInfo {
     data: *mut (),
     waker: Waker,
@@ -49,6 +50,7 @@ impl RegInfo {
 }
 
 // Stage of linking the receiver and sender ends.
+#[derive(Clone)] // Cloning the Waker in aiur is cheap
 enum Linking {
     Created,
     Registered(RegInfo),
@@ -56,12 +58,12 @@ enum Linking {
     Dropped,
 }
 
-// Debug 
+// Debug
 impl std::fmt::Debug for Linking {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Linking::Created => f.write_str("Created"),
-            Linking::Registered(..)=> f.write_str("Registered"),
+            Linking::Registered(..) => f.write_str("Registered"),
             Linking::Exchanged => f.write_str("Exchanged"),
             Linking::Dropped => f.write_str("Dropped"),
         }
@@ -81,6 +83,53 @@ impl OneshotNode {
             sender: Linking::Created,
             receiver: Linking::Created,
             recv_exchanged: false,
+        }
+    }
+
+    fn set_sender(&self, sender: Linking) -> Self {
+        Self {
+            sender: sender,
+            receiver: self.receiver.clone(),
+            recv_exchanged: self.recv_exchanged,
+        }
+    }
+
+    fn set_receiver(&self, receiver: Linking) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            receiver: receiver,
+            recv_exchanged: self.recv_exchanged,
+        }
+    }
+}
+
+// See the state machine chart in code below
+impl std::fmt::Debug for OneshotNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.sender {
+            Linking::Created => f.write_str("(C,"),
+            Linking::Registered(..) => {
+                if matches!(self.receiver, Linking::Registered(..)) {
+                    f.write_str("(R,")
+                } else {
+                    f.write_str("{R,")
+                }
+            }
+            Linking::Exchanged => f.write_str("(E,"),
+            Linking::Dropped => f.write_str("(D,"),
+        }?;
+
+        match self.receiver {
+            Linking::Created => f.write_str("C)"),
+            Linking::Registered(..) => f.write_str("R}"),
+            Linking::Exchanged => f.write_str("E)"),
+            Linking::Dropped => {
+                if self.recv_exchanged && matches!(self.sender, Linking::Registered(..)) {
+                    f.write_str("D*)")
+                } else {
+                    f.write_str("D)")
+                }
+            }
         }
     }
 }
@@ -141,29 +190,30 @@ impl ChannelApi {
      *     |              +         +                |
      *     |              +->(R,R}<-+                |
      *     |                   |                     |
-     *     |                 {R,E)+->{R,D*)+--------->
+     *     |                 {R,E)+->{R,D*)+---------^
      *     |                   |                     |
      *     |                 (E,E)                   |
      *     |                   +                     |
      *     |                   |                     |
      *     +-------------------+---------------------+
      *
-     *     The state machine is sender/receiver:
+     *     The state machine is (sender,receiver):
      *        * C: Created
      *        * R: Registered
      *        * E: Exchanged
      *        * D: Dropped
      *
-     *   Everything starts from (C,C) and in (D,D) channel resource are released. (D,D) has
-     *   two instances on the diagram just for clarity.
+     *   Everything starts from (C,C) and in (D,D) all channel resources are released. (D,D) has
+     *   two instances on the diagram above for clarity, but this is the same state.
      *
-     *   get_event_id():
-     *      * returns None when state described in parentheses, for example (C,C)
+     *   get_event_id() returns event for the Runtime:
+     *      * returns None when state is described in parentheses, for example (C,C)
      *      * the curly brace means sender or receiver should be awoken (R,R} - awake
-     *        the receiver side. In response to the awake, the channel future is expected 
-     *        to invoke exchange(), but future drop also possible.
-     *      * D* is a special state indicates that transfer was succesful (e.g. receiver was
-     *        dropped just after it had value received).
+     *        the receiver side. In response to the awake, the channel future is expected
+     *        to invoke exchange(), but drop also possible and expected.
+     *      * "D*" is a special state indicates that transfer was succesful: receiver was
+     *        dropped just after it had value received, so we should signal success to
+     *        sender.
      */
 
     pub(crate) fn get_event_id(&self) -> Option<EventId> {

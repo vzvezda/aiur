@@ -1,6 +1,10 @@
+//  \ O /
+//  / * \    aiur: the homeplanet for the famous executors
+// |' | '|   (c) 2020 - present, Vladimir Zvezda
+//   / \
+//
 
-// tracing for development
-//#[macro_export]
+// Module level tracing
 #[macro_use]
 macro_rules! modtrace {
     ($fmt_str:tt)

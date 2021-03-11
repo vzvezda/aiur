@@ -14,7 +14,7 @@ use super::future_utils::{self};
 const SLEEP_MODE: toy_rt::SleepMode = toy_rt::SleepMode::Emulated;
 
 #[test]
-fn channel_works_spawn() {
+fn oneshot_works_spawn() {
     struct AsyncState {
         recv_data: u32,
     }
@@ -44,7 +44,7 @@ fn channel_works_spawn() {
 }
 
 #[test]
-fn channel_works_select() {
+fn oneshot_works_select() {
     struct AsyncState {
         recv_data: u32,
     }
@@ -74,7 +74,7 @@ fn channel_works_select() {
 
 
 #[test]
-fn channel_recv_dropped() {
+fn oneshot_recv_dropped() {
     struct AsyncState {
         recv_data: u32,
     }
@@ -105,7 +105,7 @@ fn channel_recv_dropped() {
 }
 
 #[test]
-fn channel_sender_dropped() {
+fn oneshot_sender_dropped() {
     struct AsyncState {
         recv_data: u32,
     }

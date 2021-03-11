@@ -11,13 +11,8 @@ use crate::channel_api::ChannelId;
 use crate::reactor::{EventId, GetEventId, Reactor};
 use crate::runtime::Runtime;
 
-// tracing for development
-macro_rules! modtrace {
-    ($fmt_str:tt)
-        => (println!(concat!("aiur::", $fmt_str)));
-    ($fmt_str:tt, $($x:expr),* )
-        => (println!(concat!("aiur::", $fmt_str), $($x),* ));
-}
+// enable/disable output of modtrace! macro
+const MODTRACE: bool = true;
 
 // -----------------------------------------------------------------------------------------------
 // Public oneshot() 

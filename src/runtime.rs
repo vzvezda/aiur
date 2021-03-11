@@ -10,6 +10,9 @@ use crate::channel_api::ChannelApi;
 use crate::reactor::{EventId, Reactor};
 use crate::task::{allocate_void_task, construct_task, Completion, ITask};
 
+// enable/disable output of modtrace! macro
+const MODTRACE: bool = true;
+
 // Info about what the reactor was awoken from: the task and the event.
 pub(crate) struct Awoken {
     itask_ptr: Cell<Option<*mut dyn ITask>>,
@@ -71,14 +74,14 @@ impl TaskMaster {
     fn inc_tasks(&self) {
         let old_tasks = self.active_tasks.get();
         let new_tasks = old_tasks + 1;
-        println!("inc task {} -> {}", old_tasks, new_tasks);
+        modtrace!("TaskMaster: inc tasks {} -> {}", old_tasks, new_tasks);
         self.active_tasks.set(new_tasks);
     }
 
     fn dec_tasks(&self) {
         let old_tasks = self.active_tasks.get();
         let new_tasks = old_tasks - 1;
-        println!("dec task {} -> {}", old_tasks, new_tasks);
+        modtrace!("TaskMaster: dec tasks {} -> {}", old_tasks, new_tasks);
         self.active_tasks.set(self.active_tasks.get() - 1);
     }
 }
@@ -166,7 +169,6 @@ where
                 self.awoken.event_id.set(event_id);
 
                 if unsafe { (*awoken_task).poll() } == Completion::Done {
-                    println!("Completed task");
                     unsafe { (*awoken_task).on_completed(); }
                     self.task_master.dec_tasks();
                     // TODO: deallocate if &addr != &task
@@ -185,11 +187,11 @@ where
         loop {
             let itask_ptr = self.task_master.pop_task();
             if itask_ptr.is_none() {
-                println!("spawn phase no tasks");
+                modtrace!("Rt: spawn phase - no tasks to spawn");
                 return;
             }
 
-            println!("spawn phase launching the task");
+            modtrace!("Rt: spawn phase - a task is about to spawn");
             let itask_ptr = itask_ptr.unwrap();
 
             let completed = unsafe {
@@ -209,8 +211,8 @@ where
     // Waits for a signal from reactor and then 
     pub(crate) fn poll_phase(&self) -> Option<*mut dyn ITask> {
         if !self.task_master.has_scheduled_tasks() {
-            println!("Poll phase without tasks");
             // it happens: we have tasks in spawn list, but nothing to wait in reactor
+            modtrace!("Rt: poll phase no tasks in reactor (will check spawn list or channels)");
             return None;
         }
 
@@ -218,7 +220,6 @@ where
         let awoken_task = self.wait();
 
         if unsafe { (*awoken_task).poll() } == Completion::Done {
-            println!("Completed task");
             unsafe { (*awoken_task).on_completed(); }
             self.task_master.dec_tasks();
             // TODO: deallocate if &addr != &task
