@@ -22,7 +22,7 @@ use crate::reactor::EventId;
 const MODTRACE: bool = true;
 
 // Channel handle used by this low level channel API (which is only has crate visibility)
-#[derive(Copy, Clone)]
+#[derive(Debug,Copy, Clone)]
 pub(crate) struct ChannelId(u32);
 
 impl ChannelId {
@@ -153,25 +153,25 @@ impl OneshotRt {
 
     pub(crate) fn reg_sender(
         &self,
-        _channel_id: ChannelId,
+        channel_id: ChannelId,
         waker: Waker,
         event_id: EventId,
         data: *mut (),
     ) {
         let reg_info = RegInfo::new(data, waker, event_id);
-        modtrace!("OneshotRt: sender registration: {:?}", reg_info);
+        modtrace!("OneshotRt: sender {:?} has been registered", channel_id);
         self.node.borrow_mut().sender = Linking::Registered(reg_info);
     }
 
     pub(crate) fn reg_receiver(
         &self,
-        _channel_id: ChannelId,
+        channel_id: ChannelId,
         waker: Waker,
         event_id: EventId,
         data: *mut (),
     ) {
         let reg_info = RegInfo::new(data, waker, event_id);
-        modtrace!("OneshotRt: receiver registration: {:?}", reg_info);
+        modtrace!("OneshotRt: receiver {:?} has been registered", channel_id);
         self.node.borrow_mut().receiver = Linking::Registered(reg_info);
     }
 
