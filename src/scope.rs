@@ -6,6 +6,9 @@ use crate::runtime::Runtime;
 use crate::reactor::Reactor;
 use crate::task::ITask;
 
+// enable/disable output of modtrace! macro
+const MODTRACE: bool = true;
+
 pub struct Scope<'runtime, ReactorT> where ReactorT: Reactor {
     rt: &'runtime Runtime<ReactorT>,
     tasks: std::cell::RefCell<Vec<*mut (dyn ITask + 'runtime)>>,
@@ -49,7 +52,7 @@ impl<'runtime, ReactorT> Scope<'runtime, ReactorT> where ReactorT: Reactor {
         let task: *mut (dyn ITask + 'runtime) = self.rt.spawn(future);
         self.tasks.borrow_mut().push(task);
         //self.tasks.push(task);
-        println!("task {} has been spawn", self.name);
+        modtrace!("Scope: scope '{}' to spawn task {:?}", self.name, task);
         //JoinHandle { scope: &self, task }
     }
 
@@ -57,19 +60,20 @@ impl<'runtime, ReactorT> Scope<'runtime, ReactorT> where ReactorT: Reactor {
 
 impl<'runtime, ReactorT> Drop for Scope<'runtime, ReactorT> where ReactorT: Reactor {
     fn drop(&mut self) {
-        println!("<<<< Entering scope {}", self.name);
+        modtrace!("Scope: <<<< Entering the poll loop in Scope('{}')::drop()", self.name);
         while self.tasks.borrow_mut().iter().any(|itask_ptr| {
         //while self.tasks.iter().any(|itask_ptr| {
             unsafe {
                 !(**itask_ptr).is_completed()
             }
         }) {
-            println!("Scope loop {}", self.name);
+            modtrace!("Scope: poll loop in Scope('{}')", self.name);
             self.rt.spawn_phase();
             self.rt.channel_phase();
             self.rt.poll_phase();
         }
 
-        println!(">>>> Leaving scope {}", self.name);
+        modtrace!("Scope: >>>> Left the poll loop in Scope('{}')::drop(), scope dropped", 
+            self.name);
     }
 }

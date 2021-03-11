@@ -6,7 +6,7 @@ use std::cell::{Cell, RefCell};
 use std::future::Future;
 use std::collections::VecDeque;
 
-use crate::channel_api::ChannelApi;
+use crate::oneshot_rt::OneshotRt;
 use crate::reactor::{EventId, Reactor};
 use crate::task::{allocate_void_task, construct_task, Completion, ITask};
 
@@ -93,7 +93,7 @@ pub struct Runtime<ReactorT> {
     reactor: ReactorT,
     awoken: Awoken,
     task_master: TaskMaster,
-    channel_api: ChannelApi,
+    oneshot_rt: OneshotRt,
 }
 
 impl<ReactorT> Runtime<ReactorT>
@@ -105,7 +105,7 @@ where
             reactor,
             awoken: Awoken::new(),
             task_master: TaskMaster::new(),
-            channel_api: ChannelApi::new(),
+            oneshot_rt: OneshotRt::new(),
         }
     }
 
@@ -137,8 +137,8 @@ where
         unsafe { result.assume_init() }
     }
 
-    pub(crate) fn channels(&self) -> &ChannelApi {
-        &self.channel_api
+    pub(crate) fn channels(&self) -> &OneshotRt {
+        &self.oneshot_rt
     }
 
     // Adds a new future as a task in a new list that is to be spawn on a spawn_phase

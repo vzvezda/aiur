@@ -12,7 +12,7 @@ mod scope;
 mod task;
 mod timer;
 mod with_runtime;
-mod channel_api;
+mod oneshot_rt;
 
 pub mod toy_rt;
 

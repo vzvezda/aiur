@@ -7,7 +7,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
-use crate::channel_api::ChannelId;
+use crate::oneshot_rt::ChannelId;
 use crate::reactor::{EventId, GetEventId, Reactor};
 use crate::runtime::Runtime;
 

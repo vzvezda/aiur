@@ -134,14 +134,14 @@ impl std::fmt::Debug for OneshotNode {
     }
 }
 
-pub(crate) struct ChannelApi {
+pub(crate) struct OneshotRt {
     // TODO: support many channels
     node: RefCell<OneshotNode>,
 }
 
-impl ChannelApi {
+impl OneshotRt {
     pub(crate) fn new() -> Self {
-        ChannelApi {
+        OneshotRt {
             node: RefCell::new(OneshotNode::new()),
         }
     }
@@ -159,7 +159,7 @@ impl ChannelApi {
         data: *mut (),
     ) {
         let reg_info = RegInfo::new(data, waker, event_id);
-        modtrace!("ChannelApi: sender registration: {:?}", reg_info);
+        modtrace!("OneshotRt: sender registration: {:?}", reg_info);
         self.node.borrow_mut().sender = Linking::Registered(reg_info);
     }
 
@@ -171,7 +171,7 @@ impl ChannelApi {
         data: *mut (),
     ) {
         let reg_info = RegInfo::new(data, waker, event_id);
-        modtrace!("ChannelApi: receiver registration: {:?}", reg_info);
+        modtrace!("OneshotRt: receiver registration: {:?}", reg_info);
         self.node.borrow_mut().receiver = Linking::Registered(reg_info);
     }
 
@@ -271,7 +271,7 @@ impl ChannelApi {
         let mut rx_data = std::mem::transmute::<*mut (), *mut Option<T>>(rx_data);
         std::mem::swap(&mut *tx_data, &mut *rx_data);
 
-        modtrace!("ChannelApi: exchange<T> just happened");
+        modtrace!("OneshotRt: exchange<T> just happened");
     }
 
     pub(crate) unsafe fn exchange<T>(&self, channel_id: ChannelId) -> bool {
@@ -315,13 +315,13 @@ impl ChannelApi {
     }
 
     pub(crate) fn cancel_sender(&self, _channel_id: ChannelId) {
-        modtrace!("ChannelApi: drop sender");
+        modtrace!("OneshotRt: drop sender");
         let mut node = self.node.borrow_mut();
         node.sender = Linking::Dropped;
     }
 
     pub(crate) fn cancel_receiver(&self, _channel_id: ChannelId) {
-        modtrace!("ChannelApi: drop receiver");
+        modtrace!("OneshotRt: drop receiver");
         let mut node = self.node.borrow_mut();
         node.receiver = Linking::Dropped;
     }
