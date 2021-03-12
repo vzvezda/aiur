@@ -49,9 +49,9 @@ impl RegInfo {
     }
 }
 
-// Stage of linking the receiver and sender ends.
-#[derive(Clone)] // Cloning the Waker in aiur is cheap
-enum Linking {
+// Where is a sender or  receiver in the communication phase
+#[derive(Clone)] // Cloning the Waker in aiur does not involve allocation
+enum PeerState {
     Created,
     Registered(RegInfo),
     Exchanged,
@@ -59,21 +59,21 @@ enum Linking {
 }
 
 // Debug
-impl std::fmt::Debug for Linking {
+impl std::fmt::Debug for PeerState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Linking::Created => f.write_str("Created"),
-            Linking::Registered(..) => f.write_str("Registered"),
-            Linking::Exchanged => f.write_str("Exchanged"),
-            Linking::Dropped => f.write_str("Dropped"),
+            PeerState::Created => f.write_str("Created"),
+            PeerState::Registered(..) => f.write_str("Registered"),
+            PeerState::Exchanged => f.write_str("Exchanged"),
+            PeerState::Dropped => f.write_str("Dropped"),
         }
     }
 }
 
 #[derive(Clone)]
 struct OneshotNode {
-    sender: Linking,
-    receiver: Linking,
+    sender: PeerState,
+    receiver: PeerState,
     // we need just one more bit for our state machine, see state machine diagram below
     recv_exchanged: bool,
 }
@@ -81,8 +81,8 @@ struct OneshotNode {
 impl OneshotNode {
     fn new() -> Self {
         Self {
-            sender: Linking::Created,
-            receiver: Linking::Created,
+            sender: PeerState::Created,
+            receiver: PeerState::Created,
             recv_exchanged: false,
         }
     }
@@ -92,24 +92,24 @@ impl OneshotNode {
 impl std::fmt::Debug for OneshotNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.sender {
-            Linking::Created => f.write_str("(C,"),
-            Linking::Registered(..) => {
-                if matches!(self.receiver, Linking::Registered(..)) {
+            PeerState::Created => f.write_str("(C,"),
+            PeerState::Registered(..) => {
+                if matches!(self.receiver, PeerState::Registered(..)) {
                     f.write_str("(R,")
                 } else {
                     f.write_str("{R,")
                 }
             }
-            Linking::Exchanged => f.write_str("(E,"),
-            Linking::Dropped => f.write_str("(D,"),
+            PeerState::Exchanged => f.write_str("(E,"),
+            PeerState::Dropped => f.write_str("(D,"),
         }?;
 
         match self.receiver {
-            Linking::Created => f.write_str("C)"),
-            Linking::Registered(..) => f.write_str("R}"),
-            Linking::Exchanged => f.write_str("E)"),
-            Linking::Dropped => {
-                if self.recv_exchanged && matches!(self.sender, Linking::Registered(..)) {
+            PeerState::Created => f.write_str("C)"),
+            PeerState::Registered(..) => f.write_str("R}"),
+            PeerState::Exchanged => f.write_str("E)"),
+            PeerState::Dropped => {
+                if self.recv_exchanged && matches!(self.sender, PeerState::Registered(..)) {
                     f.write_str("D*)")
                 } else {
                     f.write_str("D)")
@@ -189,7 +189,7 @@ impl InnerOneshotRt {
         }
     }
 
-    fn set_sender(&mut self, channel_id: ChannelId, sender: Linking, log_context: &str) {
+    fn set_sender(&mut self, channel_id: ChannelId, sender: PeerState, log_context: &str) {
         let old = self.node.clone();
 
         self.node = OneshotNode {
@@ -207,7 +207,7 @@ impl InnerOneshotRt {
         );
     }
 
-    fn set_receiver(&mut self, channel_id: ChannelId, receiver: Linking, log_context: &str) {
+    fn set_receiver(&mut self, channel_id: ChannelId, receiver: PeerState, log_context: &str) {
         let old = self.node.clone();
         self.node = OneshotNode {
             sender: old.sender.clone(),
@@ -227,7 +227,7 @@ impl InnerOneshotRt {
     fn set_receiver_ext(
         &mut self,
         channel_id: ChannelId,
-        receiver: Linking,
+        receiver: PeerState,
         recv_exchanged: bool,
         log_context: &str,
     ) {
@@ -258,7 +258,7 @@ impl InnerOneshotRt {
         data: *mut (),
     ) {
         let reg_info = RegInfo::new(data, waker, event_id);
-        self.set_sender(channel_id, Linking::Registered(reg_info), "by reg_sender()");
+        self.set_sender(channel_id, PeerState::Registered(reg_info), "by reg_sender()");
     }
 
     fn reg_receiver(
@@ -269,7 +269,7 @@ impl InnerOneshotRt {
         data: *mut (),
     ) {
         let reg_info = RegInfo::new(data, waker, event_id);
-        self.set_receiver(channel_id, Linking::Registered(reg_info), "by reg_receiver()");
+        self.set_receiver(channel_id, PeerState::Registered(reg_info), "by reg_receiver()");
     }
 
     /*
@@ -315,17 +315,17 @@ impl InnerOneshotRt {
 
     fn get_event_id(&self) -> Option<EventId> {
         // nobody to awake when there is a channel side in "Created" state
-        if matches!(self.node.sender, Linking::Created) {
+        if matches!(self.node.sender, PeerState::Created) {
             return None;
         }
-        if matches!(self.node.receiver, Linking::Created) {
+        if matches!(self.node.receiver, PeerState::Created) {
             return None;
         }
 
         // first awake the receiver. sender cannot be in Created state, other state like
         // Registered or Dropped are ok.
         match &self.node.receiver {
-            Linking::Registered(ref rx_reg_info) => {
+            PeerState::Registered(ref rx_reg_info) => {
                 rx_reg_info.waker.wake_by_ref();
                 return Some(rx_reg_info.event_id);
             }
@@ -335,7 +335,7 @@ impl InnerOneshotRt {
         // Awake the sender, the receiver cannnot be in Created state, but other states like
         // Exhanged or Dropped are ok.
         match &self.node.sender {
-            Linking::Registered(ref tx_reg_info) => {
+            PeerState::Registered(ref tx_reg_info) => {
                 tx_reg_info.waker.wake_by_ref();
                 return Some(tx_reg_info.event_id);
             }
@@ -346,9 +346,9 @@ impl InnerOneshotRt {
         // to have a channel side exchanged while another end is not yet registered.
         debug_assert!(
             match (&self.node.sender, &self.node.receiver) {
-                (Linking::Created, Linking::Exchanged)
-                | (Linking::Exchanged, Linking::Created)
-                | (Linking::Exchanged, Linking::Registered(..)) => false,
+                (PeerState::Created, PeerState::Exchanged)
+                | (PeerState::Exchanged, PeerState::Created)
+                | (PeerState::Exchanged, PeerState::Registered(..)) => false,
                 _ => true,
             },
             concat!(
@@ -374,22 +374,22 @@ impl InnerOneshotRt {
 
     pub(crate) unsafe fn exchange<T>(&mut self, channel_id: ChannelId) -> bool {
         match (&self.node.sender, &self.node.receiver) {
-            (Linking::Registered(..), Linking::Exchanged) => {
-                self.set_sender(channel_id, Linking::Exchanged, "exchange()");
+            (PeerState::Registered(..), PeerState::Exchanged) => {
+                self.set_sender(channel_id, PeerState::Exchanged, "by exchange()");
                 return true;
             }
-            (Linking::Registered(..), Linking::Dropped) => {
-                self.set_sender(channel_id, Linking::Exchanged, "exchange()");
+            (PeerState::Registered(..), PeerState::Dropped) => {
+                self.set_sender(channel_id, PeerState::Exchanged, "by exchange()");
                 // Receiver can be dropped after exchange happened
                 return self.node.recv_exchanged;
             }
-            (Linking::Dropped, Linking::Registered(..)) => {
-                self.set_receiver(channel_id, Linking::Exchanged, "exchange()");
+            (PeerState::Dropped, PeerState::Registered(..)) => {
+                self.set_receiver(channel_id, PeerState::Exchanged, "by exchange()");
                 return false;
             }
-            (Linking::Registered(ref tx), Linking::Registered(ref rx)) => {
+            (PeerState::Registered(ref tx), PeerState::Registered(ref rx)) => {
                 Self::exhange_impl::<T>(tx.data, rx.data);
-                self.set_receiver_ext(channel_id, Linking::Exchanged, true, "exchange()");
+                self.set_receiver_ext(channel_id, PeerState::Exchanged, true, "by exchange()");
                 return true;
             }
             _ =>
@@ -408,11 +408,10 @@ impl InnerOneshotRt {
     }
 
     pub(crate) fn cancel_sender(&mut self, channel_id: ChannelId) {
-        modtrace!("OneshotRt: drop sender");
-        self.set_sender(channel_id, Linking::Dropped, "sender cancelled");
+        self.set_sender(channel_id, PeerState::Dropped, "by cancel_sender()");
     }
 
     pub(crate) fn cancel_receiver(&mut self, channel_id: ChannelId) {
-        self.set_receiver(channel_id, Linking::Dropped, "receiver cancelled");
+        self.set_receiver(channel_id, PeerState::Dropped, "by cancel_receiver()");
     }
 }
