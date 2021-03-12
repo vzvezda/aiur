@@ -7,7 +7,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
-use crate::oneshot_rt::ChannelId;
+use crate::oneshot_rt::OneshotId;
 use crate::reactor::{EventId, GetEventId, Reactor};
 use crate::runtime::Runtime;
 
@@ -24,8 +24,8 @@ pub fn oneshot<'runtime, T, ReactorT: Reactor>(
     Sender<'runtime, T, ReactorT>,
     Receiver<'runtime, T, ReactorT>,
 ) {
-    let channel_id = rt.channels().create();
-    (Sender::new(rt, channel_id), Receiver::new(rt, channel_id))
+    let oneshot_id = rt.channels().create();
+    (Sender::new(rt, oneshot_id), Receiver::new(rt, oneshot_id))
 }
 
 /// Error type returned by Receiver: the only possible error is channel closed on sender's side.
@@ -33,39 +33,39 @@ pub fn oneshot<'runtime, T, ReactorT: Reactor>(
 pub struct RecvError;
 
 // -----------------------------------------------------------------------------------------------
-// RuntimeChannel: it is commonly used here: runtime and channel_id coupled together.
+// RuntimeChannel: it is commonly used here: runtime and oneshot_id coupled together.
 struct RuntimeChannel<'runtime, ReactorT: Reactor> {
     rt: &'runtime Runtime<ReactorT>,
-    channel_id: ChannelId,
+    oneshot_id: OneshotId,
 }
 
 impl<'runtime, ReactorT: Reactor> RuntimeChannel<'runtime, ReactorT> {
-    fn new(rt: &'runtime Runtime<ReactorT>, channel_id: ChannelId) -> Self {
-        RuntimeChannel { rt, channel_id }
+    fn new(rt: &'runtime Runtime<ReactorT>, oneshot_id: OneshotId) -> Self {
+        RuntimeChannel { rt, oneshot_id }
     }
 
     fn reg_sender(&self, waker: &Waker, sender_event_id: EventId, pointer: *mut ()) {
         self.rt
             .channels()
-            .reg_sender(self.channel_id, waker.clone(), sender_event_id, pointer);
+            .reg_sender(self.oneshot_id, waker.clone(), sender_event_id, pointer);
     }
 
     fn reg_receiver(&self, waker: &Waker, receiver_event_id: EventId, pointer: *mut ()) {
         self.rt
             .channels()
-            .reg_receiver(self.channel_id, waker.clone(), receiver_event_id, pointer);
+            .reg_receiver(self.oneshot_id, waker.clone(), receiver_event_id, pointer);
     }
 
     unsafe fn exchange<T>(&self) -> bool {
-        self.rt.channels().exchange::<T>(self.channel_id)
+        self.rt.channels().exchange::<T>(self.oneshot_id)
     }
 
     fn cancel_sender(&self) {
-        self.rt.channels().cancel_sender(self.channel_id);
+        self.rt.channels().cancel_sender(self.oneshot_id);
     }
 
     fn cancel_receiver(&self) {
-        self.rt.channels().cancel_receiver(self.channel_id);
+        self.rt.channels().cancel_receiver(self.oneshot_id);
     }
 }
 
@@ -82,9 +82,9 @@ enum SenderInner<'runtime, T, ReactorT: Reactor> {
 }
 
 impl<'runtime, T, ReactorT: Reactor> Sender<'runtime, T, ReactorT> {
-    fn new(rt: &'runtime Runtime<ReactorT>, channel_id: ChannelId) -> Self {
+    fn new(rt: &'runtime Runtime<ReactorT>, oneshot_id: OneshotId) -> Self {
         Sender {
-            inner: SenderInner::Created(RuntimeChannel::new(rt, channel_id)),
+            inner: SenderInner::Created(RuntimeChannel::new(rt, oneshot_id)),
         }
     }
 
@@ -133,7 +133,7 @@ impl<'runtime, T, ReactorT: Reactor> GetEventId for SenderFuture<'runtime, T, Re
 impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
     fn new(rc: &RuntimeChannel<'runtime, ReactorT>, value: T) -> Self {
         SenderFuture {
-            runtime_channel: RuntimeChannel::new(rc.rt, rc.channel_id),
+            runtime_channel: RuntimeChannel::new(rc.rt, rc.oneshot_id),
             data: Some(value),
             state: FutureState::Created,
         }
@@ -213,9 +213,9 @@ pub struct Receiver<'runtime, T, ReactorT: Reactor> {
 impl<'runtime, T, ReactorT: Reactor> GetEventId for Receiver<'runtime, T, ReactorT> {}
 
 impl<'runtime, T, ReactorT: Reactor> Receiver<'runtime, T, ReactorT> {
-    fn new(rt: &'runtime Runtime<ReactorT>, channel_id: ChannelId) -> Self {
+    fn new(rt: &'runtime Runtime<ReactorT>, oneshot_id: OneshotId) -> Self {
         Receiver {
-            runtime_channel: RuntimeChannel::new(rt, channel_id),
+            runtime_channel: RuntimeChannel::new(rt, oneshot_id),
             state: FutureState::Created,
             data: None,
         }

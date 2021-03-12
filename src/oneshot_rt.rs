@@ -23,11 +23,11 @@ const MODTRACE: bool = true;
 
 // Channel handle used by this low level channel API (which is only has crate visibility)
 #[derive(Debug, Copy, Clone)]
-pub(crate) struct ChannelId(u32);
+pub(crate) struct OneshotId(u32);
 
-impl ChannelId {
+impl OneshotId {
     pub(crate) fn null() -> Self {
-        ChannelId(0)
+        OneshotId(0)
     }
 }
 
@@ -133,48 +133,48 @@ impl OneshotRt {
         }
     }
 
-    pub(crate) fn create(&self) -> ChannelId {
+    pub(crate) fn create(&self) -> OneshotId {
         self.inner.borrow_mut().create()
     }
 
     pub(crate) fn reg_sender(
         &self,
-        channel_id: ChannelId,
+        oneshot_id: OneshotId,
         waker: Waker,
         event_id: EventId,
         data: *mut (),
     ) {
         self.inner
             .borrow_mut()
-            .reg_sender(channel_id, waker, event_id, data);
+            .reg_sender(oneshot_id, waker, event_id, data);
     }
 
     pub(crate) fn reg_receiver(
         &self,
-        channel_id: ChannelId,
+        oneshot_id: OneshotId,
         waker: Waker,
         event_id: EventId,
         data: *mut (),
     ) {
         self.inner
             .borrow_mut()
-            .reg_receiver(channel_id, waker, event_id, data);
+            .reg_receiver(oneshot_id, waker, event_id, data);
     }
 
     pub(crate) fn get_event_id(&self) -> Option<EventId> {
         self.inner.borrow().get_event_id()
     }
 
-    pub(crate) unsafe fn exchange<T>(&self, channel_id: ChannelId) -> bool {
-        self.inner.borrow_mut().exchange::<T>(channel_id)
+    pub(crate) unsafe fn exchange<T>(&self, oneshot_id: OneshotId) -> bool {
+        self.inner.borrow_mut().exchange::<T>(oneshot_id)
     }
 
-    pub(crate) fn cancel_sender(&self, channel_id: ChannelId) {
-        self.inner.borrow_mut().cancel_sender(channel_id);
+    pub(crate) fn cancel_sender(&self, oneshot_id: OneshotId) {
+        self.inner.borrow_mut().cancel_sender(oneshot_id);
     }
 
-    pub(crate) fn cancel_receiver(&self, channel_id: ChannelId) {
-        self.inner.borrow_mut().cancel_receiver(channel_id);
+    pub(crate) fn cancel_receiver(&self, oneshot_id: OneshotId) {
+        self.inner.borrow_mut().cancel_receiver(oneshot_id);
     }
 }
 
@@ -189,7 +189,7 @@ impl InnerOneshotRt {
         }
     }
 
-    fn set_sender(&mut self, channel_id: ChannelId, sender: PeerState, log_context: &str) {
+    fn set_sender(&mut self, oneshot_id: OneshotId, sender: PeerState, log_context: &str) {
         let old = self.node.clone();
 
         self.node = OneshotNode {
@@ -200,14 +200,14 @@ impl InnerOneshotRt {
 
         modtrace!(
             "OneshotRt: {:?} state {:?} -> {:?} ({})",
-            channel_id,
+            oneshot_id,
             old,
             self.node,
             log_context
         );
     }
 
-    fn set_receiver(&mut self, channel_id: ChannelId, receiver: PeerState, log_context: &str) {
+    fn set_receiver(&mut self, oneshot_id: OneshotId, receiver: PeerState, log_context: &str) {
         let old = self.node.clone();
         self.node = OneshotNode {
             sender: old.sender.clone(),
@@ -217,7 +217,7 @@ impl InnerOneshotRt {
 
         modtrace!(
             "OneshotRt: {:?} state {:?} -> {:?} ({})",
-            channel_id,
+            oneshot_id,
             old,
             self.node,
             log_context
@@ -226,7 +226,7 @@ impl InnerOneshotRt {
 
     fn set_receiver_ext(
         &mut self,
-        channel_id: ChannelId,
+        oneshot_id: OneshotId,
         receiver: PeerState,
         recv_exchanged: bool,
         log_context: &str,
@@ -239,37 +239,37 @@ impl InnerOneshotRt {
         };
         modtrace!(
             "OneshotRt: {:?} state {:?} -> {:?} ({})",
-            channel_id,
+            oneshot_id,
             old,
             self.node,
             log_context
         );
     }
 
-    fn create(&mut self) -> ChannelId {
-        ChannelId(1) // TODO: support many channels
+    fn create(&mut self) -> OneshotId {
+        OneshotId(1) // TODO: support many channels
     }
 
     fn reg_sender(
         &mut self,
-        channel_id: ChannelId,
+        oneshot_id: OneshotId,
         waker: Waker,
         event_id: EventId,
         data: *mut (),
     ) {
         let reg_info = RegInfo::new(data, waker, event_id);
-        self.set_sender(channel_id, PeerState::Registered(reg_info), "by reg_sender()");
+        self.set_sender(oneshot_id, PeerState::Registered(reg_info), "by reg_sender()");
     }
 
     fn reg_receiver(
         &mut self,
-        channel_id: ChannelId,
+        oneshot_id: OneshotId,
         waker: Waker,
         event_id: EventId,
         data: *mut (),
     ) {
         let reg_info = RegInfo::new(data, waker, event_id);
-        self.set_receiver(channel_id, PeerState::Registered(reg_info), "by reg_receiver()");
+        self.set_receiver(oneshot_id, PeerState::Registered(reg_info), "by reg_receiver()");
     }
 
     /*
@@ -372,24 +372,24 @@ impl InnerOneshotRt {
         modtrace!("OneshotRt: exchange<T> mem::swap() just happened");
     }
 
-    pub(crate) unsafe fn exchange<T>(&mut self, channel_id: ChannelId) -> bool {
+    pub(crate) unsafe fn exchange<T>(&mut self, oneshot_id: OneshotId) -> bool {
         match (&self.node.sender, &self.node.receiver) {
             (PeerState::Registered(..), PeerState::Exchanged) => {
-                self.set_sender(channel_id, PeerState::Exchanged, "by exchange()");
+                self.set_sender(oneshot_id, PeerState::Exchanged, "by exchange()");
                 return true;
             }
             (PeerState::Registered(..), PeerState::Dropped) => {
-                self.set_sender(channel_id, PeerState::Exchanged, "by exchange()");
+                self.set_sender(oneshot_id, PeerState::Exchanged, "by exchange()");
                 // Receiver can be dropped after exchange happened
                 return self.node.recv_exchanged;
             }
             (PeerState::Dropped, PeerState::Registered(..)) => {
-                self.set_receiver(channel_id, PeerState::Exchanged, "by exchange()");
+                self.set_receiver(oneshot_id, PeerState::Exchanged, "by exchange()");
                 return false;
             }
             (PeerState::Registered(ref tx), PeerState::Registered(ref rx)) => {
                 Self::exhange_impl::<T>(tx.data, rx.data);
-                self.set_receiver_ext(channel_id, PeerState::Exchanged, true, "by exchange()");
+                self.set_receiver_ext(oneshot_id, PeerState::Exchanged, true, "by exchange()");
                 return true;
             }
             _ =>
@@ -407,11 +407,11 @@ impl InnerOneshotRt {
         }
     }
 
-    pub(crate) fn cancel_sender(&mut self, channel_id: ChannelId) {
-        self.set_sender(channel_id, PeerState::Dropped, "by cancel_sender()");
+    pub(crate) fn cancel_sender(&mut self, oneshot_id: OneshotId) {
+        self.set_sender(oneshot_id, PeerState::Dropped, "by cancel_sender()");
     }
 
-    pub(crate) fn cancel_receiver(&mut self, channel_id: ChannelId) {
-        self.set_receiver(channel_id, PeerState::Dropped, "by cancel_receiver()");
+    pub(crate) fn cancel_receiver(&mut self, oneshot_id: OneshotId) {
+        self.set_receiver(oneshot_id, PeerState::Dropped, "by cancel_receiver()");
     }
 }
