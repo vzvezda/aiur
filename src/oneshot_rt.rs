@@ -86,30 +86,6 @@ impl OneshotNode {
             recv_exchanged: false,
         }
     }
-
-    fn set_sender(&self, sender: Linking) -> Self {
-        Self {
-            sender: sender,
-            receiver: self.receiver.clone(),
-            recv_exchanged: self.recv_exchanged,
-        }
-    }
-
-    fn set_receiver(&self, receiver: Linking) -> Self {
-        Self {
-            sender: self.sender.clone(),
-            receiver: receiver,
-            recv_exchanged: self.recv_exchanged,
-        }
-    }
-
-    fn set_receiver_ext(&self, receiver: Linking, recv_exchanged: bool) -> Self {
-        Self {
-            sender: self.sender.clone(),
-            receiver: receiver,
-            recv_exchanged: recv_exchanged,
-        }
-    }
 }
 
 // See the state machine chart in code below
@@ -215,7 +191,13 @@ impl InnerOneshotRt {
 
     fn set_sender(&mut self, channel_id: ChannelId, sender: Linking, log_context: &str) {
         let old = self.node.clone();
-        self.node = old.set_sender(sender);
+
+        self.node = OneshotNode {
+            sender: sender,
+            receiver: old.receiver.clone(),
+            recv_exchanged: old.recv_exchanged,
+        };
+
         modtrace!(
             "OneshotRt: {:?} state {:?} -> {:?} ({})",
             channel_id,
@@ -227,7 +209,12 @@ impl InnerOneshotRt {
 
     fn set_receiver(&mut self, channel_id: ChannelId, receiver: Linking, log_context: &str) {
         let old = self.node.clone();
-        self.node = old.set_receiver(receiver);
+        self.node = OneshotNode {
+            sender: old.sender.clone(),
+            receiver: receiver,
+            recv_exchanged: old.recv_exchanged,
+        };
+
         modtrace!(
             "OneshotRt: {:?} state {:?} -> {:?} ({})",
             channel_id,
@@ -245,7 +232,11 @@ impl InnerOneshotRt {
         log_context: &str,
     ) {
         let old = self.node.clone();
-        self.node = old.set_receiver_ext(receiver, recv_exchanged);
+        self.node = OneshotNode {
+            sender: old.sender.clone(),
+            receiver: receiver,
+            recv_exchanged: recv_exchanged,
+        };
         modtrace!(
             "OneshotRt: {:?} state {:?} -> {:?} ({})",
             channel_id,
