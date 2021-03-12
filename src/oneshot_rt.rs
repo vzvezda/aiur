@@ -22,7 +22,7 @@ use crate::reactor::EventId;
 const MODTRACE: bool = true;
 
 // Channel handle used by this low level channel API (which is only has crate visibility)
-#[derive(Debug,Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub(crate) struct ChannelId(u32);
 
 impl ChannelId {
@@ -70,6 +70,7 @@ impl std::fmt::Debug for Linking {
     }
 }
 
+#[derive(Clone)]
 struct OneshotNode {
     sender: Linking,
     receiver: Linking,
@@ -99,6 +100,14 @@ impl OneshotNode {
             sender: self.sender.clone(),
             receiver: receiver,
             recv_exchanged: self.recv_exchanged,
+        }
+    }
+
+    fn set_receiver_ext(&self, receiver: Linking, recv_exchanged: bool) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            receiver: receiver,
+            recv_exchanged: recv_exchanged,
         }
     }
 }
@@ -134,21 +143,22 @@ impl std::fmt::Debug for OneshotNode {
     }
 }
 
+// Runtime API for Oneshot futures
 pub(crate) struct OneshotRt {
-    // TODO: support many channels
-    node: RefCell<OneshotNode>,
+    // Actual implementation forwarded to inner struct with mutability. Perhaps the
+    // UnsafeCell should be ok here since the API is private for the crate.
+    inner: RefCell<InnerOneshotRt>,
 }
 
 impl OneshotRt {
     pub(crate) fn new() -> Self {
         OneshotRt {
-            node: RefCell::new(OneshotNode::new()),
+            inner: RefCell::new(InnerOneshotRt::new()),
         }
     }
 
     pub(crate) fn create(&self) -> ChannelId {
-        // TODO: support many channels
-        ChannelId(1)
+        self.inner.borrow_mut().create()
     }
 
     pub(crate) fn reg_sender(
@@ -158,9 +168,9 @@ impl OneshotRt {
         event_id: EventId,
         data: *mut (),
     ) {
-        let reg_info = RegInfo::new(data, waker, event_id);
-        modtrace!("OneshotRt: sender {:?} has been registered", channel_id);
-        self.node.borrow_mut().sender = Linking::Registered(reg_info);
+        self.inner
+            .borrow_mut()
+            .reg_sender(channel_id, waker, event_id, data);
     }
 
     pub(crate) fn reg_receiver(
@@ -170,9 +180,105 @@ impl OneshotRt {
         event_id: EventId,
         data: *mut (),
     ) {
+        self.inner
+            .borrow_mut()
+            .reg_receiver(channel_id, waker, event_id, data);
+    }
+
+    pub(crate) fn get_event_id(&self) -> Option<EventId> {
+        self.inner.borrow().get_event_id()
+    }
+
+    pub(crate) unsafe fn exchange<T>(&self, channel_id: ChannelId) -> bool {
+        self.inner.borrow_mut().exchange::<T>(channel_id)
+    }
+
+    pub(crate) fn cancel_sender(&self, channel_id: ChannelId) {
+        self.inner.borrow_mut().cancel_sender(channel_id);
+    }
+
+    pub(crate) fn cancel_receiver(&self, channel_id: ChannelId) {
+        self.inner.borrow_mut().cancel_receiver(channel_id);
+    }
+}
+
+struct InnerOneshotRt {
+    node: OneshotNode, // TODO: support many channels
+}
+
+impl InnerOneshotRt {
+    fn new() -> Self {
+        InnerOneshotRt {
+            node: OneshotNode::new(),
+        }
+    }
+
+    fn set_sender(&mut self, channel_id: ChannelId, sender: Linking, log_context: &str) {
+        let old = self.node.clone();
+        self.node = old.set_sender(sender);
+        modtrace!(
+            "OneshotRt: {:?} state {:?} -> {:?} ({})",
+            channel_id,
+            old,
+            self.node,
+            log_context
+        );
+    }
+
+    fn set_receiver(&mut self, channel_id: ChannelId, receiver: Linking, log_context: &str) {
+        let old = self.node.clone();
+        self.node = old.set_receiver(receiver);
+        modtrace!(
+            "OneshotRt: {:?} state {:?} -> {:?} ({})",
+            channel_id,
+            old,
+            self.node,
+            log_context
+        );
+    }
+
+    fn set_receiver_ext(
+        &mut self,
+        channel_id: ChannelId,
+        receiver: Linking,
+        recv_exchanged: bool,
+        log_context: &str,
+    ) {
+        let old = self.node.clone();
+        self.node = old.set_receiver_ext(receiver, recv_exchanged);
+        modtrace!(
+            "OneshotRt: {:?} state {:?} -> {:?} ({})",
+            channel_id,
+            old,
+            self.node,
+            log_context
+        );
+    }
+
+    fn create(&mut self) -> ChannelId {
+        ChannelId(1) // TODO: support many channels
+    }
+
+    fn reg_sender(
+        &mut self,
+        channel_id: ChannelId,
+        waker: Waker,
+        event_id: EventId,
+        data: *mut (),
+    ) {
         let reg_info = RegInfo::new(data, waker, event_id);
-        modtrace!("OneshotRt: receiver {:?} has been registered", channel_id);
-        self.node.borrow_mut().receiver = Linking::Registered(reg_info);
+        self.set_sender(channel_id, Linking::Registered(reg_info), "by reg_sender()");
+    }
+
+    fn reg_receiver(
+        &mut self,
+        channel_id: ChannelId,
+        waker: Waker,
+        event_id: EventId,
+        data: *mut (),
+    ) {
+        let reg_info = RegInfo::new(data, waker, event_id);
+        self.set_receiver(channel_id, Linking::Registered(reg_info), "by reg_receiver()");
     }
 
     /*
@@ -216,17 +322,18 @@ impl OneshotRt {
      *        sender.
      */
 
-    pub(crate) fn get_event_id(&self) -> Option<EventId> {
-        let node = self.node.borrow();
-
+    fn get_event_id(&self) -> Option<EventId> {
         // nobody to awake when there is a channel side in "Created" state
-        if matches!(node.sender, Linking::Created) || matches!(node.receiver, Linking::Created) {
+        if matches!(self.node.sender, Linking::Created) {
+            return None;
+        }
+        if matches!(self.node.receiver, Linking::Created) {
             return None;
         }
 
         // first awake the receiver. sender cannot be in Created state, other state like
         // Registered or Dropped are ok.
-        match &node.receiver {
+        match &self.node.receiver {
             Linking::Registered(ref rx_reg_info) => {
                 rx_reg_info.waker.wake_by_ref();
                 return Some(rx_reg_info.event_id);
@@ -236,7 +343,7 @@ impl OneshotRt {
 
         // Awake the sender, the receiver cannnot be in Created state, but other states like
         // Exhanged or Dropped are ok.
-        match &node.sender {
+        match &self.node.sender {
             Linking::Registered(ref tx_reg_info) => {
                 tx_reg_info.waker.wake_by_ref();
                 return Some(tx_reg_info.event_id);
@@ -247,7 +354,7 @@ impl OneshotRt {
         // Some of the pairs of states are impossible, for example it is not possible
         // to have a channel side exchanged while another end is not yet registered.
         debug_assert!(
-            match (&node.sender, &node.receiver) {
+            match (&self.node.sender, &self.node.receiver) {
                 (Linking::Created, Linking::Exchanged)
                 | (Linking::Exchanged, Linking::Created)
                 | (Linking::Exchanged, Linking::Registered(..)) => false,
@@ -257,8 +364,8 @@ impl OneshotRt {
                 "aiur: oneshot::get_event_id() invoked in unexpected state. ",
                 "Sender: {:?}, receiver: {:?}"
             ),
-            node.sender,
-            node.receiver,
+            self.node.sender,
+            self.node.receiver,
         );
 
         // Othere states like (Exchanged, Exchanged) or (Dropped, Exchanged) are possible
@@ -271,32 +378,27 @@ impl OneshotRt {
         let mut rx_data = std::mem::transmute::<*mut (), *mut Option<T>>(rx_data);
         std::mem::swap(&mut *tx_data, &mut *rx_data);
 
-        modtrace!("OneshotRt: exchange<T> just happened");
+        modtrace!("OneshotRt: exchange<T> mem::swap() just happened");
     }
 
-    pub(crate) unsafe fn exchange<T>(&self, channel_id: ChannelId) -> bool {
-        let mut node = self.node.borrow_mut();
-
-        modtrace!("Exchange {:?},{:?}", node.sender, node.receiver);
-
-        match (&node.sender, &node.receiver) {
+    pub(crate) unsafe fn exchange<T>(&mut self, channel_id: ChannelId) -> bool {
+        match (&self.node.sender, &self.node.receiver) {
             (Linking::Registered(..), Linking::Exchanged) => {
-                node.sender = Linking::Exchanged;
+                self.set_sender(channel_id, Linking::Exchanged, "exchange()");
                 return true;
             }
             (Linking::Registered(..), Linking::Dropped) => {
-                node.sender = Linking::Exchanged;
+                self.set_sender(channel_id, Linking::Exchanged, "exchange()");
                 // Receiver can be dropped after exchange happened
-                return node.recv_exchanged;
+                return self.node.recv_exchanged;
             }
             (Linking::Dropped, Linking::Registered(..)) => {
-                node.receiver = Linking::Exchanged;
+                self.set_receiver(channel_id, Linking::Exchanged, "exchange()");
                 return false;
             }
             (Linking::Registered(ref tx), Linking::Registered(ref rx)) => {
                 Self::exhange_impl::<T>(tx.data, rx.data);
-                node.receiver = Linking::Exchanged;
-                node.recv_exchanged = true;
+                self.set_receiver_ext(channel_id, Linking::Exchanged, true, "exchange()");
                 return true;
             }
             _ =>
@@ -308,21 +410,18 @@ impl OneshotRt {
                         "aiur: oneshot::exhange() invoked in unexpected state. ",
                         "Sender: {:?}, receiver: {:?}"
                     ),
-                    node.sender, node.receiver
+                    self.node.sender, self.node.receiver
                 )
             }
         }
     }
 
-    pub(crate) fn cancel_sender(&self, _channel_id: ChannelId) {
+    pub(crate) fn cancel_sender(&mut self, channel_id: ChannelId) {
         modtrace!("OneshotRt: drop sender");
-        let mut node = self.node.borrow_mut();
-        node.sender = Linking::Dropped;
+        self.set_sender(channel_id, Linking::Dropped, "sender cancelled");
     }
 
-    pub(crate) fn cancel_receiver(&self, _channel_id: ChannelId) {
-        modtrace!("OneshotRt: drop receiver");
-        let mut node = self.node.borrow_mut();
-        node.receiver = Linking::Dropped;
+    pub(crate) fn cancel_receiver(&mut self, channel_id: ChannelId) {
+        self.set_receiver(channel_id, Linking::Dropped, "receiver cancelled");
     }
 }

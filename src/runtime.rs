@@ -191,8 +191,8 @@ where
                 return;
             }
 
-            modtrace!("Rt: spawn phase - a task is about to spawn");
             let itask_ptr = itask_ptr.unwrap();
+            modtrace!("Rt: spawn phase - found a task {:?} to spawn", itask_ptr);
 
             let completed = unsafe {
                 (*itask_ptr).on_pinned();
