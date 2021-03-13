@@ -13,6 +13,7 @@ use super::future_utils::{self};
 //const SLEEP_MODE: toy_rt::SleepMode = toy_rt::SleepMode::Actual;
 const SLEEP_MODE: toy_rt::SleepMode = toy_rt::SleepMode::Emulated;
 
+// Spawns a task and send a oneshot value from parent to child tasks.
 #[test]
 fn oneshot_works_spawn() {
     struct AsyncState {
@@ -38,11 +39,15 @@ fn oneshot_works_spawn() {
         state
     }
 
+    // State transitions for this test:
+    // (C,C)->(R,C)->(R,R}->{R,E)->{R,D*}->(E,D)->(D,D)
     let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
 
     assert_eq!(state.recv_data, 42);
 }
 
+// Launch sender/receiver in a select!()-like mode, so once the first (receiver) is complete
+// the sender is dropped. 
 #[test]
 fn oneshot_works_select() {
     struct AsyncState {
@@ -67,12 +72,16 @@ fn oneshot_works_select() {
         state
     }
 
+    // State transitions for this test:
+    // (C,C)->(R,C)->(R,R}->{R,E)->{R,D*}->(D,D)
     let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
 
     assert_eq!(state.recv_data, 42);
 }
 
 
+// When future that suppose to receive a oneshot just dropped. In this case sender
+// should return the value back.
 #[test]
 fn oneshot_recv_dropped() {
     struct AsyncState {
@@ -94,16 +103,21 @@ fn oneshot_recv_dropped() {
             let (mut tx, rx) = toy_rt::oneshot::<u32>(&rt);
             scope.spawn(reader(rt, rx, &mut state));
 
+            // verify that sender receiver the value back as error
             assert_eq!(tx.send(42).await.unwrap_err(), 42);
         }
         state
     }
 
+    // State transitions for this test:
+    // (C,C)->(R,C)->{R,D)->{E,D)->(D,D)
     let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
 
     assert_eq!(state.recv_data, 0);
 }
 
+// When future that suppose to send a oneshot just dropped. In this case receiver 
+// receiver an error.
 #[test]
 fn oneshot_sender_dropped() {
     struct AsyncState {
@@ -128,6 +142,8 @@ fn oneshot_sender_dropped() {
         state
     }
 
+    // State transitions for this test:
+    // (C,C)->(D,C)->(D,R}->(D,E)->(D,D)
     let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
 
     assert_eq!(state.recv_data, 0);

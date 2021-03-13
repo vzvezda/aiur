@@ -96,6 +96,8 @@ impl std::fmt::Debug for OneshotNode {
             PeerState::Registered(..) => {
                 if matches!(self.receiver, PeerState::Registered(..)) {
                     f.write_str("(R,")
+                } else if matches!(self.receiver, PeerState::Created) {
+                    f.write_str("(R,")
                 } else {
                     f.write_str("{R,")
                 }
@@ -258,7 +260,11 @@ impl InnerOneshotRt {
         data: *mut (),
     ) {
         let reg_info = RegInfo::new(data, waker, event_id);
-        self.set_sender(oneshot_id, PeerState::Registered(reg_info), "by reg_sender()");
+        self.set_sender(
+            oneshot_id,
+            PeerState::Registered(reg_info),
+            "by reg_sender()",
+        );
     }
 
     fn reg_receiver(
@@ -269,7 +275,11 @@ impl InnerOneshotRt {
         data: *mut (),
     ) {
         let reg_info = RegInfo::new(data, waker, event_id);
-        self.set_receiver(oneshot_id, PeerState::Registered(reg_info), "by reg_receiver()");
+        self.set_receiver(
+            oneshot_id,
+            PeerState::Registered(reg_info),
+            "by reg_receiver()",
+        );
     }
 
     /*
