@@ -46,6 +46,38 @@ fn oneshot_works_spawn() {
     assert_eq!(state.recv_data, 42);
 }
 
+#[test]
+fn oneshot_works_spawn_reverted() {
+    struct AsyncState {
+        recv_data: u32,
+    }
+
+    async fn writer<'runtime, 'state>(
+        rt: &'runtime toy_rt::Runtime,
+        mut tx: toy_rt::Sender<'runtime, u32>,
+    ) {
+        tx.send(42).await.unwrap();
+    }
+
+    async fn messenger(rt: &toy_rt::Runtime, _: ()) -> AsyncState {
+        let mut state = AsyncState { recv_data: 0 };
+        {
+            let mut scope = toy_rt::Scope::new_named(rt, "Messenger");
+            let (tx, rx) = toy_rt::oneshot::<u32>(&rt);
+            scope.spawn(writer(rt, tx));
+            state.recv_data = rx.await.unwrap();
+        }
+        state
+    }
+
+    // State transitions for this test:
+    // (C,C)->(C,R)->(R,R}->{R,E)->{R,D*}->(E,D)->(D,D)
+    let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
+
+    assert_eq!(state.recv_data, 42);
+}
+
+
 // Launch sender/receiver in a select!()-like mode, so once the first (receiver) is complete
 // the sender is dropped. 
 #[test]
@@ -147,5 +179,58 @@ fn oneshot_sender_dropped() {
     let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
 
     assert_eq!(state.recv_data, 0);
+}
+
+// Just drop sender/receiver after creation.
+#[test]
+fn oneshot_drop_all() {
+    async fn messenger(rt: &toy_rt::Runtime, _: ()) {
+        let (tx, rx) = toy_rt::oneshot::<u32>(&rt);
+    }
+
+    // State transitions for this test:
+    // (C,C)->(C,D)->(D,D)
+    let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
+}
+
+// Just drop sender/receiver after creation, but drop sender first.
+#[test]
+fn oneshot_drop_all_alt_order() {
+    async fn messenger(rt: &toy_rt::Runtime, _: ()) {
+        let (tx, rx) = toy_rt::oneshot::<u32>(&rt);
+        drop(tx);
+    }
+
+    // State transitions for this test:
+    // (C,C)->(D,C)->(D,D)
+    let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
+}
+
+// Just drop sender/receiver after creation.
+#[test]
+fn oneshot_recv_from_dropped() {
+    async fn messenger(rt: &toy_rt::Runtime, _: ()) {
+        let (tx, rx) = toy_rt::oneshot::<u32>(&rt);
+        drop(tx);
+        rx.await.expect_err("receiver must receive error if sender is dropped");
+    }
+
+    // State transitions for this test:
+    // (C,C)->(D,C)->(D,R}->(D,E)->(D,D)
+    let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
+}
+
+// Just drop sender/receiver after creation.
+#[test]
+fn oneshot_send_to_dropped() {
+    async fn messenger(rt: &toy_rt::Runtime, _: ()) {
+        let (mut tx, rx) = toy_rt::oneshot::<u32>(&rt);
+        drop(rx);
+        tx.send(42).await.expect_err("send must receive error if sender is dropped");
+    }
+
+    // State transitions for this test:
+    // (C,C)->(C,D)->{R,D)->(E,D)->(D,D)
+    let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
 }
 
