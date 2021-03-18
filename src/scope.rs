@@ -56,20 +56,30 @@ impl<'runtime, ReactorT> Scope<'runtime, ReactorT> where ReactorT: Reactor {
         //JoinHandle { scope: &self, task }
     }
 
+    fn has_uncompleted_tasks(&self) -> bool {
+        self.tasks.borrow_mut().iter().any(|itask_ptr| {
+            unsafe {
+                !(**itask_ptr).is_completed()
+            }
+        })
+    }
 }
 
 impl<'runtime, ReactorT> Drop for Scope<'runtime, ReactorT> where ReactorT: Reactor {
     fn drop(&mut self) {
         modtrace!("Scope: <<<< Entering the poll loop in Scope('{}')::drop()", self.name);
-        while self.tasks.borrow_mut().iter().any(|itask_ptr| {
-        //while self.tasks.iter().any(|itask_ptr| {
-            unsafe {
-                !(**itask_ptr).is_completed()
-            }
-        }) {
+        while self.has_uncompleted_tasks() {
             modtrace!("Scope: poll loop in Scope('{}')", self.name);
             self.rt.spawn_phase();
+            // TODO: here should be a more efficent way to verify if there are uncompleted
+            // tasks.
+            if !self.has_uncompleted_tasks() {
+                break;
+            }
             self.rt.channel_phase();
+            if !self.has_uncompleted_tasks() {
+                break;
+            }
             self.rt.poll_phase();
         }
 

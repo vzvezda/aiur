@@ -88,7 +88,7 @@ impl OneshotNode {
     }
 }
 
-// See the state machine chart in code below
+// Produce a state like "(C,R}". See the state machine chart in code below for meaning.
 impl std::fmt::Debug for OneshotNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.sender {
@@ -108,7 +108,13 @@ impl std::fmt::Debug for OneshotNode {
 
         match self.receiver {
             PeerState::Created => f.write_str("C)"),
-            PeerState::Registered(..) => f.write_str("R}"),
+            PeerState::Registered(..) => {
+                if matches!(self.sender, PeerState::Created) {
+                    f.write_str("R)")
+                } else {
+                    f.write_str("R}")
+                }
+            }
             PeerState::Exchanged => f.write_str("E)"),
             PeerState::Dropped => {
                 if self.recv_exchanged && matches!(self.sender, PeerState::Registered(..)) {
