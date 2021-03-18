@@ -33,15 +33,15 @@ pub fn oneshot<'runtime, T, ReactorT: Reactor>(
 pub struct RecvError;
 
 // -----------------------------------------------------------------------------------------------
-// RuntimeChannel: it is commonly used here: runtime and oneshot_id coupled together.
-struct RuntimeChannel<'runtime, ReactorT: Reactor> {
+// RuntimeOneshot: it is commonly used here: runtime and oneshot_id coupled together.
+struct RuntimeOneshot<'runtime, ReactorT: Reactor> {
     rt: &'runtime Runtime<ReactorT>,
     oneshot_id: OneshotId,
 }
 
-impl<'runtime, ReactorT: Reactor> RuntimeChannel<'runtime, ReactorT> {
+impl<'runtime, ReactorT: Reactor> RuntimeOneshot<'runtime, ReactorT> {
     fn new(rt: &'runtime Runtime<ReactorT>, oneshot_id: OneshotId) -> Self {
-        RuntimeChannel { rt, oneshot_id }
+        RuntimeOneshot { rt, oneshot_id }
     }
 
     fn reg_sender(&self, waker: &Waker, sender_event_id: EventId, pointer: *mut ()) {
@@ -77,14 +77,14 @@ pub struct Sender<'runtime, T, ReactorT: Reactor> {
 
 // Possible state of the Sender: before and after .send() is invoked
 enum SenderInner<'runtime, T, ReactorT: Reactor> {
-    Created(RuntimeChannel<'runtime, ReactorT>),
+    Created(RuntimeOneshot<'runtime, ReactorT>),
     Sent(PhantomData<T>), // Type required for Future
 }
 
 impl<'runtime, T, ReactorT: Reactor> Sender<'runtime, T, ReactorT> {
     fn new(rt: &'runtime Runtime<ReactorT>, oneshot_id: OneshotId) -> Self {
         Sender {
-            inner: SenderInner::Created(RuntimeChannel::new(rt, oneshot_id)),
+            inner: SenderInner::Created(RuntimeOneshot::new(rt, oneshot_id)),
         }
     }
 
@@ -114,7 +114,7 @@ impl<'runtime, T, ReactorT: Reactor> Drop for Sender<'runtime, T, ReactorT> {
 
 // -----------------------------------------------------------------------------------------------
 #[derive(Debug)]
-enum FutureState {
+enum PeerFutureState {
     Created,
     Exchanging,
     Closed,
@@ -122,30 +122,30 @@ enum FutureState {
 
 // -----------------------------------------------------------------------------------------------
 struct SenderFuture<'runtime, T, ReactorT: Reactor> {
-    runtime_channel: RuntimeChannel<'runtime, ReactorT>,
+    runtime_channel: RuntimeOneshot<'runtime, ReactorT>,
     data: Option<T>,
-    state: FutureState,
+    state: PeerFutureState,
 }
 
 // This just makes the get_event_id() method in TimerFuture
 impl<'runtime, T, ReactorT: Reactor> GetEventId for SenderFuture<'runtime, T, ReactorT> {}
 
 impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
-    fn new(rc: &RuntimeChannel<'runtime, ReactorT>, value: T) -> Self {
+    fn new(rc: &RuntimeOneshot<'runtime, ReactorT>, value: T) -> Self {
         SenderFuture {
-            runtime_channel: RuntimeChannel::new(rc.rt, rc.oneshot_id),
+            runtime_channel: RuntimeOneshot::new(rc.rt, rc.oneshot_id),
             data: Some(value),
-            state: FutureState::Created,
+            state: PeerFutureState::Created,
         }
     }
 
-    fn set_state(&mut self, new_state: FutureState) {
+    fn set_state(&mut self, new_state: PeerFutureState) {
         modtrace!("Oneshot/SenderFuture: state {:?} -> {:?}", self.state, new_state);
         self.state = new_state;
     }
 
     fn transmit(&mut self, waker: &Waker, event_id: EventId) -> Poll<Result<(), T>> {
-        self.set_state(FutureState::Exchanging);
+        self.set_state(PeerFutureState::Exchanging);
 
         self.runtime_channel.reg_sender(
             waker,
@@ -161,7 +161,7 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
             return Poll::Pending; // not our event, ignore the poll
         }
 
-        self.set_state(FutureState::Closed);
+        self.set_state(PeerFutureState::Closed);
 
         return if unsafe { self.runtime_channel.exchange::<T>() } {
             Poll::Ready(Ok(()))
@@ -183,9 +183,9 @@ impl<'runtime, T, ReactorT: Reactor> Future for SenderFuture<'runtime, T, Reacto
         let this = unsafe { self.get_unchecked_mut() };
 
         return match this.state {
-            FutureState::Created => this.transmit(&ctx.waker(), event_id), // always Pending
-            FutureState::Exchanging => this.close(event_id),
-            FutureState::Closed => {
+            PeerFutureState::Created => this.transmit(&ctx.waker(), event_id), // always Pending
+            PeerFutureState::Exchanging => this.close(event_id),
+            PeerFutureState::Closed => {
                 panic!("aiur: oneshot::SenderFuture was polled after completion.")
             }
         };
@@ -205,8 +205,8 @@ impl<'runtime, T, ReactorT: Reactor> Drop for SenderFuture<'runtime, T, ReactorT
 // Receiver has a lot of copy paste with SenderFuture, but unification produced more code and
 // less clarity.
 pub struct Receiver<'runtime, T, ReactorT: Reactor> {
-    runtime_channel: RuntimeChannel<'runtime, ReactorT>,
-    state: FutureState,
+    runtime_channel: RuntimeOneshot<'runtime, ReactorT>,
+    state: PeerFutureState,
     data: Option<T>,
 }
 
@@ -215,19 +215,19 @@ impl<'runtime, T, ReactorT: Reactor> GetEventId for Receiver<'runtime, T, Reacto
 impl<'runtime, T, ReactorT: Reactor> Receiver<'runtime, T, ReactorT> {
     fn new(rt: &'runtime Runtime<ReactorT>, oneshot_id: OneshotId) -> Self {
         Receiver {
-            runtime_channel: RuntimeChannel::new(rt, oneshot_id),
-            state: FutureState::Created,
+            runtime_channel: RuntimeOneshot::new(rt, oneshot_id),
+            state: PeerFutureState::Created,
             data: None,
         }
     }
 
-    fn set_state(&mut self, new_state: FutureState) {
+    fn set_state(&mut self, new_state: PeerFutureState) {
         modtrace!("Oneshot/ReceiverFuture: state {:?} -> {:?}", self.state, new_state);
         self.state = new_state;
     }
 
     fn transmit(&mut self, waker: &Waker, event_id: EventId) -> Poll<Result<T, RecvError>> {
-        self.set_state(FutureState::Exchanging);
+        self.set_state(PeerFutureState::Exchanging);
         self.runtime_channel.reg_receiver(
             waker,
             event_id,
@@ -242,7 +242,7 @@ impl<'runtime, T, ReactorT: Reactor> Receiver<'runtime, T, ReactorT> {
             return Poll::Pending;
         }
 
-        self.set_state(FutureState::Closed);
+        self.set_state(PeerFutureState::Closed);
         return if unsafe { self.runtime_channel.exchange::<T>() } {
             Poll::Ready(Ok(self.data.take().unwrap()))
         } else {
@@ -270,9 +270,9 @@ impl<'runtime, T, ReactorT: Reactor> Future for Receiver<'runtime, T, ReactorT> 
         let this = unsafe { self.get_unchecked_mut() };
 
         return match this.state {
-            FutureState::Created => this.transmit(&ctx.waker(), event_id), // always Pending
-            FutureState::Exchanging => this.close(event_id),
-            FutureState::Closed => {
+            PeerFutureState::Created => this.transmit(&ctx.waker(), event_id), // always Pending
+            PeerFutureState::Exchanging => this.close(event_id),
+            PeerFutureState::Closed => {
                 panic!("aiur: oneshot::ReceiverFuture was polled after completion.")
             }
         };

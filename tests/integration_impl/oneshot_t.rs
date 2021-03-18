@@ -15,7 +15,7 @@ const SLEEP_MODE: toy_rt::SleepMode = toy_rt::SleepMode::Emulated;
 
 // Spawns a task and send a oneshot value from parent to child tasks.
 #[test]
-fn oneshot_works_spawn() {
+fn oneshot_spawn_recv_works() {
     struct AsyncState {
         recv_data: u32,
     }
@@ -46,8 +46,10 @@ fn oneshot_works_spawn() {
     assert_eq!(state.recv_data, 42);
 }
 
+// Spawns a task and send a oneshot value from child to parent tasks. Interesting fact: this 
+// test has reveal a bug in Scope::drop()
 #[test]
-fn oneshot_works_spawn_reverted() {
+fn oneshot_spawn_sender_works() {
     struct AsyncState {
         recv_data: u32,
     }
@@ -77,11 +79,10 @@ fn oneshot_works_spawn_reverted() {
     assert_eq!(state.recv_data, 42);
 }
 
-
 // Launch sender/receiver in a select!()-like mode, so once the first (receiver) is complete
 // the sender is dropped. 
 #[test]
-fn oneshot_works_select() {
+fn oneshot_select_works() {
     struct AsyncState {
         recv_data: u32,
     }
