@@ -6,8 +6,12 @@ use std::cell::{Cell, RefCell};
 use std::future::Future;
 use std::collections::VecDeque;
 
+use crate::oneshot_rt::OneshotRt;
 use crate::reactor::{EventId, Reactor};
 use crate::task::{allocate_void_task, construct_task, Completion, ITask};
+
+// enable/disable output of modtrace! macro
+const MODTRACE: bool = true;
 
 // Info about what the reactor was awoken from: the task and the event.
 pub(crate) struct Awoken {
@@ -68,14 +72,20 @@ impl TaskMaster {
     }
 
     fn inc_tasks(&self) {
-        self.active_tasks.set(self.active_tasks.get() + 1);
+        let old_tasks = self.active_tasks.get();
+        let new_tasks = old_tasks + 1;
+        modtrace!("TaskMaster: inc tasks {} -> {}", old_tasks, new_tasks);
+        self.active_tasks.set(new_tasks);
     }
 
     fn dec_tasks(&self) {
+        let old_tasks = self.active_tasks.get();
+        let new_tasks = old_tasks - 1;
+        modtrace!("TaskMaster: dec tasks {} -> {}", old_tasks, new_tasks);
         self.active_tasks.set(self.active_tasks.get() - 1);
     }
-
 }
+
 
 //
 //
@@ -83,6 +93,7 @@ pub struct Runtime<ReactorT> {
     reactor: ReactorT,
     awoken: Awoken,
     task_master: TaskMaster,
+    oneshot_rt: OneshotRt,
 }
 
 impl<ReactorT> Runtime<ReactorT>
@@ -94,6 +105,7 @@ where
             reactor,
             awoken: Awoken::new(),
             task_master: TaskMaster::new(),
+            oneshot_rt: OneshotRt::new(),
         }
     }
 
@@ -116,29 +128,56 @@ where
 
         // while self.executor.borrow().is_active() || self.executor.borrow().has_tasks_to_spawn() {
         while self.task_master.has_tasks() {
+            // TODO: repeat spawn/channel until done before proceed to poll
             self.spawn_phase();
+            self.channel_phase();
             self.poll_phase();
         }
 
         unsafe { result.assume_init() }
     }
 
+    pub(crate) fn channels(&self) -> &OneshotRt {
+        &self.oneshot_rt
+    }
+
     // Adds a new future as a task in a new list that is to be spawn on a spawn_phase
-    pub(crate) fn spawn<'runtime, F>(&'runtime self, f: F) -> *mut (dyn ITask + 'runtime)
+    pub(crate) fn spawn<'runtime, 'scope, F>(&'runtime self, f: F) 
+        -> *mut (dyn ITask + 'static)
     where
         F: Future<Output = ()> + 'runtime,
     {
         let task = allocate_void_task(&self.awoken, f);
 
-        /*
+        self.task_master.add_task_for_spawn(task);
+
         // ok, we have this unsafe
         let task = unsafe {
             std::mem::transmute::<*mut (dyn ITask + 'runtime), *mut (dyn ITask + 'static)>(task)
         };
-        */
 
-        self.task_master.add_task_for_spawn(task);
         task
+    }
+
+    pub(crate) fn channel_phase(&self) {
+        // do the channel exchange until there is no more channels 
+        loop {
+            // TODO: this is a copy/paste of poll_phase code, we need to unify this
+
+            if let Some(event_id) = self.channels().get_event_id() {
+                let awoken_task = self.awoken.itask_ptr.get().unwrap();
+                self.awoken.event_id.set(event_id);
+
+                if unsafe { (*awoken_task).poll() } == Completion::Done {
+                    unsafe { (*awoken_task).on_completed(); }
+                    self.task_master.dec_tasks();
+                    // TODO: deallocate if &addr != &task
+                } else {
+                }
+            } else {
+                break;
+            }
+        }
     }
 
     //
@@ -148,12 +187,12 @@ where
         loop {
             let itask_ptr = self.task_master.pop_task();
             if itask_ptr.is_none() {
-                println!("spawn phase no tasks");
+                modtrace!("Rt: spawn phase - no tasks to spawn");
                 return;
             }
 
-            println!("spawn phase launching the task");
             let itask_ptr = itask_ptr.unwrap();
+            modtrace!("Rt: spawn phase - found a task {:?} to spawn", itask_ptr);
 
             let completed = unsafe {
                 (*itask_ptr).on_pinned();
@@ -172,8 +211,8 @@ where
     // Waits for a signal from reactor and then 
     pub(crate) fn poll_phase(&self) -> Option<*mut dyn ITask> {
         if !self.task_master.has_scheduled_tasks() {
-            println!("Poll phase without tasks");
             // it happens: we have tasks in spawn list, but nothing to wait in reactor
+            modtrace!("Rt: poll phase no tasks in reactor (will check spawn list or channels)");
             return None;
         }
 
@@ -181,7 +220,6 @@ where
         let awoken_task = self.wait();
 
         if unsafe { (*awoken_task).poll() } == Completion::Done {
-            println!("Completed task");
             unsafe { (*awoken_task).on_completed(); }
             self.task_master.dec_tasks();
             // TODO: deallocate if &addr != &task

@@ -2,6 +2,9 @@
 //  / * \    aiur: the homeplanet for the famous executors
 // |' | '|   (c) 2020 - present, Vladimir Zvezda
 //   / \     
+//
+// Toy Runtime is a runtime based on aiur with reactor that only support sleeping. Sleeping
+// works as emulation of any long IO, so this runtime is used for testing.
 mod toy_reactor;
 
 // has to export for the macro
