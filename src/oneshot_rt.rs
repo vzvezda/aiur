@@ -382,8 +382,8 @@ impl InnerOneshotRt {
     }
 
     unsafe fn exhange_impl<T>(tx_data: *mut (), rx_data: *mut ()) {
-        let mut tx_data = std::mem::transmute::<*mut (), *mut Option<T>>(tx_data);
-        let mut rx_data = std::mem::transmute::<*mut (), *mut Option<T>>(rx_data);
+        let tx_data = std::mem::transmute::<*mut (), *mut Option<T>>(tx_data);
+        let rx_data = std::mem::transmute::<*mut (), *mut Option<T>>(rx_data);
         std::mem::swap(&mut *tx_data, &mut *rx_data);
 
         modtrace!("OneshotRt: exchange<T> mem::swap() just happened");

@@ -16,7 +16,7 @@ mod oneshot_rt;
 
 pub mod toy_rt;
 
-pub use oneshot::oneshot;
+pub use oneshot::{oneshot, Sender, Receiver};
 pub use reactor::{EventId, GetEventId, Reactor, TemporalReactor};
 pub use runtime::Runtime;
 pub use scope::Scope;
@@ -37,18 +37,18 @@ macro_rules! export_runtime {
 
 
         pub type Receiver<'runtime, T> = 
-            $crate::oneshot::Receiver<'runtime, T, $reactor>;
+            $crate::Receiver<'runtime, T, $reactor>;
 
         pub type Sender<'runtime, T> = 
-            $crate::oneshot::Sender<'runtime, T, $reactor>;
+            $crate::Sender<'runtime, T, $reactor>;
 
         pub fn oneshot<'runtime, T>(
             rt: &'runtime Runtime
         ) -> (
-            $crate::oneshot::Sender<'runtime, T, $reactor>,
-            $crate::oneshot::Receiver<'runtime, T, $reactor>,
+            $crate::Sender<'runtime, T, $reactor>,
+            $crate::Receiver<'runtime, T, $reactor>,
         ) {
-            $crate::oneshot::oneshot::<T, $reactor>(rt)
+            $crate::oneshot::<T, $reactor>(rt)
         }
 
         pub fn with_runtime<ReactorFn, FuncT, InitT, ResT>(
