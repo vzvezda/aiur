@@ -22,7 +22,7 @@ use crate::reactor::EventId;
 const MODTRACE: bool = true;
 
 // Channel handle used by this low level channel API (which is only has crate visibility)
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub(crate) struct OneshotId(u32);
 
 impl OneshotId {
@@ -72,6 +72,7 @@ impl std::fmt::Debug for PeerState {
 
 #[derive(Clone)]
 struct OneshotNode {
+    id: OneshotId,
     sender: PeerState,
     receiver: PeerState,
     // we need just one more bit for our state machine, see state machine diagram below
@@ -79,8 +80,9 @@ struct OneshotNode {
 }
 
 impl OneshotNode {
-    fn new() -> Self {
+    fn new(id: u32) -> Self {
         Self {
+            id: OneshotId(id),
             sender: PeerState::Created,
             receiver: PeerState::Created,
             recv_exchanged: false,
@@ -187,20 +189,35 @@ impl OneshotRt {
 }
 
 struct InnerOneshotRt {
-    node: OneshotNode, // TODO: support many channels
+    nodes: Vec<OneshotNode>,
+    last_id: u32,
 }
 
 impl InnerOneshotRt {
     fn new() -> Self {
         InnerOneshotRt {
-            node: OneshotNode::new(),
+            nodes: Vec::new(),
+            last_id: 0,
         }
     }
 
-    fn set_sender(&mut self, oneshot_id: OneshotId, sender: PeerState, log_context: &str) {
-        let old = self.node.clone();
+    // find the index in self.nodes() for given oneshot_id. Panics if not found.
+    fn find_index(&self, oneshot_id: OneshotId) -> usize {
+        self.nodes
+            .iter()
+            .position(|node| node.id == oneshot_id)
+            .unwrap()
+    }
 
-        self.node = OneshotNode {
+    // Changes the state of the sender. Panics if channel_id is not found.
+    fn set_sender(&mut self, oneshot_id: OneshotId, sender: PeerState, log_context: &str) {
+
+        // TODO: too many index access
+        let idx = self.find_index(oneshot_id);
+        let old = self.nodes[idx].clone();
+
+        self.nodes[idx] = OneshotNode {
+            id: old.id,
             sender: sender,
             receiver: old.receiver.clone(),
             recv_exchanged: old.recv_exchanged,
@@ -210,14 +227,16 @@ impl InnerOneshotRt {
             "OneshotRt: {:?} state {:?} -> {:?} ({})",
             oneshot_id,
             old,
-            self.node,
+            self.nodes[idx],
             log_context
         );
     }
 
     fn set_receiver(&mut self, oneshot_id: OneshotId, receiver: PeerState, log_context: &str) {
-        let old = self.node.clone();
-        self.node = OneshotNode {
+        let idx = self.find_index(oneshot_id);
+        let old = self.nodes[idx].clone();
+        self.nodes[idx] = OneshotNode {
+            id: old.id,
             sender: old.sender.clone(),
             receiver: receiver,
             recv_exchanged: old.recv_exchanged,
@@ -227,7 +246,7 @@ impl InnerOneshotRt {
             "OneshotRt: {:?} state {:?} -> {:?} ({})",
             oneshot_id,
             old,
-            self.node,
+            self.nodes[idx],
             log_context
         );
     }
@@ -239,8 +258,10 @@ impl InnerOneshotRt {
         recv_exchanged: bool,
         log_context: &str,
     ) {
-        let old = self.node.clone();
-        self.node = OneshotNode {
+        let idx = self.find_index(oneshot_id);
+        let old = self.nodes[idx].clone();
+        self.nodes[idx] = OneshotNode {
+            id: old.id,
             sender: old.sender.clone(),
             receiver: receiver,
             recv_exchanged: recv_exchanged,
@@ -249,13 +270,15 @@ impl InnerOneshotRt {
             "OneshotRt: {:?} state {:?} -> {:?} ({})",
             oneshot_id,
             old,
-            self.node,
+            self.nodes[idx],
             log_context
         );
     }
 
     fn create(&mut self) -> OneshotId {
-        OneshotId(1) // TODO: support many channels
+        self.last_id = self.last_id.wrapping_add(1);
+        self.nodes.push(OneshotNode::new(self.last_id));
+        OneshotId(self.last_id)
     }
 
     fn reg_sender(
@@ -286,6 +309,13 @@ impl InnerOneshotRt {
             PeerState::Registered(reg_info),
             "by reg_receiver()",
         );
+    }
+
+
+    // Scans all nodes and if there is a oneshot that ready to await, it makes waker.wake_by_ref()
+    // and returns the event_id.
+    fn get_event_id(&self) -> Option<EventId> {
+        self.nodes.iter().find_map(|node| Self::get_event_id_for_node(&node))
     }
 
     /*
@@ -330,18 +360,18 @@ impl InnerOneshotRt {
      *        sender.
      */
 
-    fn get_event_id(&self) -> Option<EventId> {
+    fn get_event_id_for_node(node: &OneshotNode) -> Option<EventId> {
         // nobody to awake when there is a channel side in "Created" state
-        if matches!(self.node.sender, PeerState::Created) {
+        if matches!(node.sender, PeerState::Created) {
             return None;
         }
-        if matches!(self.node.receiver, PeerState::Created) {
+        if matches!(node.receiver, PeerState::Created) {
             return None;
         }
 
         // first awake the receiver. sender cannot be in Created state, other state like
         // Registered or Dropped are ok.
-        match &self.node.receiver {
+        match &node.receiver {
             PeerState::Registered(ref rx_reg_info) => {
                 rx_reg_info.waker.wake_by_ref();
                 return Some(rx_reg_info.event_id);
@@ -351,7 +381,7 @@ impl InnerOneshotRt {
 
         // Awake the sender, the receiver cannnot be in Created state, but other states like
         // Exhanged or Dropped are ok.
-        match &self.node.sender {
+        match &node.sender {
             PeerState::Registered(ref tx_reg_info) => {
                 tx_reg_info.waker.wake_by_ref();
                 return Some(tx_reg_info.event_id);
@@ -362,7 +392,7 @@ impl InnerOneshotRt {
         // Some of the pairs of states are impossible, for example it is not possible
         // to have a channel side exchanged while another end is not yet registered.
         debug_assert!(
-            match (&self.node.sender, &self.node.receiver) {
+            match (&node.sender, &node.receiver) {
                 (PeerState::Created, PeerState::Exchanged)
                 | (PeerState::Exchanged, PeerState::Created)
                 | (PeerState::Exchanged, PeerState::Registered(..)) => false,
@@ -372,8 +402,8 @@ impl InnerOneshotRt {
                 "aiur: oneshot::get_event_id() invoked in unexpected state. ",
                 "Sender: {:?}, receiver: {:?}"
             ),
-            self.node.sender,
-            self.node.receiver,
+            node.sender,
+            node.receiver,
         );
 
         // Othere states like (Exchanged, Exchanged) or (Dropped, Exchanged) are possible
@@ -390,7 +420,8 @@ impl InnerOneshotRt {
     }
 
     pub(crate) unsafe fn exchange<T>(&mut self, oneshot_id: OneshotId) -> bool {
-        match (&self.node.sender, &self.node.receiver) {
+        let node = self.nodes[self.find_index(oneshot_id)].clone();
+        match (&node.sender, &node.receiver) {
             (PeerState::Registered(..), PeerState::Exchanged) => {
                 self.set_sender(oneshot_id, PeerState::Exchanged, "by exchange()");
                 return true;
@@ -398,7 +429,7 @@ impl InnerOneshotRt {
             (PeerState::Registered(..), PeerState::Dropped) => {
                 self.set_sender(oneshot_id, PeerState::Exchanged, "by exchange()");
                 // Receiver can be dropped after exchange happened
-                return self.node.recv_exchanged;
+                return node.recv_exchanged;
             }
             (PeerState::Dropped, PeerState::Registered(..)) => {
                 self.set_receiver(oneshot_id, PeerState::Exchanged, "by exchange()");
@@ -418,7 +449,7 @@ impl InnerOneshotRt {
                         "aiur: oneshot::exhange() invoked in unexpected state. ",
                         "Sender: {:?}, receiver: {:?}"
                     ),
-                    self.node.sender, self.node.receiver
+                    node.sender, node.receiver
                 )
             }
         }
