@@ -35,7 +35,6 @@ macro_rules! export_runtime {
         pub use $crate::sleep;
         pub use $crate::GetEventId;
 
-
         pub type Receiver<'runtime, T> = 
             $crate::Receiver<'runtime, T, $reactor>;
 

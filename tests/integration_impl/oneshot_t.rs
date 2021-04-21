@@ -235,3 +235,41 @@ fn oneshot_send_to_dropped() {
     let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
 }
 
+
+#[test]
+fn oneshot_many_channels() {
+    struct AsyncState {
+        recv1_data: u32,
+        recv2_data: u32,
+    }
+
+    async fn writer<'runtime, 'state>(
+        rt: &'runtime toy_rt::Runtime,
+        mut tx: toy_rt::Sender<'runtime, u32>,
+    ) {
+        tx.send(42).await.unwrap();
+    }
+
+    async fn messenger(rt: &toy_rt::Runtime, _: ()) -> AsyncState {
+        let mut state = AsyncState { recv1_data: 0, recv2_data: 0 };
+        {
+            let mut scope = toy_rt::Scope::new_named(rt, "ScopeMany");
+            let (tx1, rx1) = toy_rt::oneshot::<u32>(&rt);
+            let (tx2, rx2) = toy_rt::oneshot::<u32>(&rt);
+            scope.spawn(writer(rt, tx1));
+            scope.spawn(writer(rt, tx2));
+            state.recv1_data = rx1.await.unwrap();
+            state.recv2_data = rx2.await.unwrap();
+        }
+        state
+    }
+
+    // State transitions for this test:
+    // (C,C)->(C,R)->(R,R}->{R,E)->{R,D*}->(E,D)->(D,D)
+    let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
+
+    assert_eq!(state.recv1_data, 42);
+    assert_eq!(state.recv1_data, 42);
+
+}
+
