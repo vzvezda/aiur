@@ -7,7 +7,7 @@
 use aiur::toy_rt::{self};
 use super::future_utils::{self};
 
-// With emulated sleep test run instantly, actual sleep actually wait for specified
+// With emulated sleep tests are run instantly, with actual sleep mode it wait for specified
 // amount of time.
 
 //const SLEEP_MODE: toy_rt::SleepMode = toy_rt::SleepMode::Actual;
@@ -237,7 +237,7 @@ fn oneshot_send_to_dropped() {
 
 
 #[test]
-fn oneshot_many_channels() {
+fn oneshot_two_channels() {
     struct AsyncState {
         recv1_data: u32,
         recv2_data: u32,
@@ -253,7 +253,7 @@ fn oneshot_many_channels() {
     async fn messenger(rt: &toy_rt::Runtime, _: ()) -> AsyncState {
         let mut state = AsyncState { recv1_data: 0, recv2_data: 0 };
         {
-            let mut scope = toy_rt::Scope::new_named(rt, "ScopeMany");
+            let mut scope = toy_rt::Scope::new_named(rt, "TwoOneshots");
             let (tx1, rx1) = toy_rt::oneshot::<u32>(&rt);
             let (tx2, rx2) = toy_rt::oneshot::<u32>(&rt);
             scope.spawn(writer(rt, tx1));
@@ -264,12 +264,10 @@ fn oneshot_many_channels() {
         state
     }
 
-    // State transitions for this test:
-    // (C,C)->(C,R)->(R,R}->{R,E)->{R,D*}->(E,D)->(D,D)
     let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
 
+    // Verify that that sent data was actually read by receiver.
     assert_eq!(state.recv1_data, 42);
-    assert_eq!(state.recv1_data, 42);
-
+    assert_eq!(state.recv2_data, 42);
 }
 
