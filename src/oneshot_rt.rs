@@ -88,6 +88,14 @@ impl OneshotNode {
             recv_exchanged: false,
         }
     }
+
+    // If both ends of the channel are dropped and channel can be removed from runtime.
+    fn can_be_dropped(&self) -> bool {
+        match (&self.receiver, &self.sender) {
+            (PeerState::Dropped, PeerState::Dropped) => true,
+            _ => false,
+        }
+    }
 }
 
 // Produce a state like "(C,R}". See the state machine chart in code below for meaning.
@@ -230,6 +238,11 @@ impl InnerOneshotRt {
             self.nodes[idx],
             log_context
         );
+
+        if self.nodes[idx].can_be_dropped() {
+            modtrace!("OneshotRt: remove channel from idx {}", idx);
+            self.nodes.remove(idx);
+        }
     }
 
     fn set_receiver(&mut self, oneshot_id: OneshotId, receiver: PeerState, log_context: &str) {
@@ -249,6 +262,12 @@ impl InnerOneshotRt {
             self.nodes[idx],
             log_context
         );
+
+        if self.nodes[idx].can_be_dropped() {
+            self.nodes.remove(idx);
+            modtrace!("OneshotRt: remove channel from idx {}", idx);
+        }
+
     }
 
     fn set_receiver_ext(
