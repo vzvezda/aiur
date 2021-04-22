@@ -236,6 +236,8 @@ fn oneshot_send_to_dropped() {
 }
 
 
+// First test to verify if two simultaneous channel can co-exists and it was introduced with
+// support in runtime. 
 #[test]
 fn oneshot_two_channels() {
     struct AsyncState {
@@ -269,5 +271,40 @@ fn oneshot_two_channels() {
     // Verify that that sent data was actually read by receiver.
     assert_eq!(state.recv1_data, 42);
     assert_eq!(state.recv2_data, 42);
+}
+
+
+// Finally, first echo server, although not a network based, but oneshot based. 
+#[test]
+fn oneshot_two_channels_echo_server() {
+    struct AsyncState {
+        echo_data: u32,
+    }
+
+    async fn echo_server<'runtime, 'state>(
+        rt: &'runtime toy_rt::Runtime,
+        mut tx: toy_rt::Sender<'runtime, u32>,
+        mut rx: toy_rt::Receiver<'runtime, u32>,
+    ) {
+        tx.send(rx.await.unwrap()).await.unwrap();
+    }
+
+    async fn echo_client(rt: &toy_rt::Runtime, _: ()) -> AsyncState {
+        let mut state = AsyncState { echo_data: 0, };
+        {
+            let mut scope = toy_rt::Scope::new_named(rt, "Echo");
+            let (tx1, rx1) = toy_rt::oneshot::<u32>(&rt);
+            let (mut tx2, rx2) = toy_rt::oneshot::<u32>(&rt);
+            scope.spawn(echo_server(rt, tx1, rx2));
+            tx2.send(42).await.unwrap();
+            state.echo_data = rx1.await.unwrap();
+        }
+        state
+    }
+
+    let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, echo_client, ());
+
+    // Verify that that sent data was actually read by receiver.
+    assert_eq!(state.echo_data, 42);
 }
 
