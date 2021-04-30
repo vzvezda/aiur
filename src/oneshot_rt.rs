@@ -179,8 +179,8 @@ impl OneshotRt {
             .reg_receiver(oneshot_id, waker, event_id, data);
     }
 
-    pub(crate) fn get_event_id(&self) -> Option<EventId> {
-        self.inner.borrow().get_event_id()
+    pub(crate) fn awake_and_get_event_id(&self) -> Option<EventId> {
+        self.inner.borrow().awake_and_get_event_id()
     }
 
     pub(crate) unsafe fn exchange<T>(&self, oneshot_id: OneshotId) -> bool {
@@ -333,7 +333,7 @@ impl InnerOneshotRt {
 
     // Scans all nodes and if there is a oneshot that ready to await, it makes waker.wake_by_ref()
     // and returns the event_id.
-    fn get_event_id(&self) -> Option<EventId> {
+    fn awake_and_get_event_id(&self) -> Option<EventId> {
         self.nodes.iter().find_map(|node| Self::get_event_id_for_node(&node))
     }
 
@@ -369,7 +369,7 @@ impl InnerOneshotRt {
      *   Everything starts from (C,C) and in (D,D) all channel resources are released. (D,D) has
      *   two instances on the diagram above for clarity, but this is the same state.
      *
-     *   get_event_id() returns event for the Runtime:
+     *   awake_and_get_event_id() returns event for the Runtime:
      *      * returns None when state is described in parentheses, for example (C,C)
      *      * the curly brace means sender or receiver should be awoken (R,R} - awake
      *        the receiver side. In response to the awake, the channel future is expected
@@ -418,7 +418,7 @@ impl InnerOneshotRt {
                 _ => true,
             },
             concat!(
-                "aiur: oneshot::get_event_id() invoked in unexpected state. ",
+                "aiur: oneshot::awake_and_get_event_id() invoked in unexpected state. ",
                 "Sender: {:?}, receiver: {:?}"
             ),
             node.sender,

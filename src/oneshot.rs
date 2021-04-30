@@ -24,7 +24,7 @@ pub fn oneshot<'runtime, T, ReactorT: Reactor>(
     Sender<'runtime, T, ReactorT>,
     Receiver<'runtime, T, ReactorT>,
 ) {
-    let oneshot_id = rt.channels().create();
+    let oneshot_id = rt.oneshots().create();
     (Sender::new(rt, oneshot_id), Receiver::new(rt, oneshot_id))
 }
 
@@ -46,26 +46,26 @@ impl<'runtime, ReactorT: Reactor> RuntimeOneshot<'runtime, ReactorT> {
 
     fn reg_sender(&self, waker: &Waker, sender_event_id: EventId, pointer: *mut ()) {
         self.rt
-            .channels()
+            .oneshots()
             .reg_sender(self.oneshot_id, waker.clone(), sender_event_id, pointer);
     }
 
     fn reg_receiver(&self, waker: &Waker, receiver_event_id: EventId, pointer: *mut ()) {
         self.rt
-            .channels()
+            .oneshots()
             .reg_receiver(self.oneshot_id, waker.clone(), receiver_event_id, pointer);
     }
 
     unsafe fn exchange<T>(&self) -> bool {
-        self.rt.channels().exchange::<T>(self.oneshot_id)
+        self.rt.oneshots().exchange::<T>(self.oneshot_id)
     }
 
     fn cancel_sender(&self) {
-        self.rt.channels().cancel_sender(self.oneshot_id);
+        self.rt.oneshots().cancel_sender(self.oneshot_id);
     }
 
     fn cancel_receiver(&self) {
-        self.rt.channels().cancel_receiver(self.oneshot_id);
+        self.rt.oneshots().cancel_receiver(self.oneshot_id);
     }
 }
 
