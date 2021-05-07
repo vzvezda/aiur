@@ -23,6 +23,10 @@ pub fn channel<'runtime, T, ReactorT: Reactor>(
     (ChSender::new(rt, channel_id), ChReceiver::new(rt, channel_id))
 }
 
+/// Error type returned by Receiver: the only possible error is channel closed on sender's side.
+#[derive(Debug)] // Debug required for Result.unwrap()
+pub struct ChRecvError;
+
 // -----------------------------------------------------------------------------------------------
 // RuntimeChannel: it is commonly used here: runtime and channel_id coupled together.
 struct RuntimeChannel<'runtime, ReactorT: Reactor> {
@@ -48,6 +52,10 @@ impl<'runtime, T, ReactorT: Reactor> ChSender<'runtime, T, ReactorT> {
             _temp: PhantomData,
         }
     }
+
+    pub async fn send(&mut self, value: T) -> Result<(), T> {
+        Ok(())
+    }
 }
 
 pub struct ChReceiver<'runtime, T, ReactorT: Reactor> {
@@ -61,6 +69,10 @@ impl<'runtime, T, ReactorT: Reactor> ChReceiver<'runtime, T, ReactorT> {
             _rc: RuntimeChannel::new(rt, channel_id),
             _temp: PhantomData,
         }
+    }
+
+    pub async fn next(&mut self) -> Result<T, ChRecvError> {
+        Err(ChRecvError)
     }
 }
 

@@ -22,7 +22,7 @@ fn channel_works() {
 
     async fn reader<'runtime, 'state>(
         rt: &'runtime toy_rt::Runtime,
-        rx: toy_rt::ChReceiver<'runtime, u32>,
+        mut rx: toy_rt::ChReceiver<'runtime, u32>,
         state: &'state mut AsyncState,
     ) {
         while let Ok(value) = rx.next().await {
