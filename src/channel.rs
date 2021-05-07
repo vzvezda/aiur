@@ -89,23 +89,25 @@ impl<'runtime, T, ReactorT: Reactor> ChSender<'runtime, T, ReactorT> {
     }
 }
 
+// TODO: impl Clone
+
 // -----------------------------------------------------------------------------------------------
 // Receiver's end of the channel
 pub struct ChReceiver<'runtime, T, ReactorT: Reactor> {
-    _rc: RuntimeChannel<'runtime, ReactorT>,
-    _temp: PhantomData<T>,
+    rc: RuntimeChannel<'runtime, ReactorT>,
+    temp: PhantomData<T>,
 }
 
 impl<'runtime, T, ReactorT: Reactor> ChReceiver<'runtime, T, ReactorT> {
     fn new(rt: &'runtime Runtime<ReactorT>, channel_id: ChannelId) -> Self {
         Self {
-            _rc: RuntimeChannel::new(rt, channel_id),
-            _temp: PhantomData,
+            rc: RuntimeChannel::new(rt, channel_id),
+            temp: PhantomData,
         }
     }
 
     pub async fn next(&mut self) -> Result<T, ChRecvError> {
-        Err(ChRecvError)
+        ChNextFuture::new(&self.rc).await
     }
 }
 
@@ -189,3 +191,84 @@ impl<'runtime, T, ReactorT: Reactor> Future for ChSenderFuture<'runtime, T, Reac
         };
     }
 }
+
+// -----------------------------------------------------------------------------------------------
+// Leaf Future returned by async fn next() in ChReceiver
+//
+// Receiver's ChNextFuture has a lot of copy paste with SenderFuture, but unification 
+// produced more code and less clarity.
+pub struct ChNextFuture<'runtime, T, ReactorT: Reactor> {
+    rc: RuntimeChannel<'runtime, ReactorT>,
+    state: PeerFutureState,
+    data: Option<T>,
+}
+
+impl<'runtime, T, ReactorT: Reactor> GetEventId for ChNextFuture<'runtime, T, ReactorT> {}
+
+impl<'runtime, T, ReactorT: Reactor> ChNextFuture<'runtime, T, ReactorT> {
+    fn new(rc: &'runtime RuntimeChannel<'runtime, ReactorT>) -> Self {
+        Self {
+            rc: RuntimeChannel::new(rc.rt, rc.channel_id),
+            state: PeerFutureState::Created,
+            data: None,
+        }
+    }
+
+    fn set_state(&mut self, new_state: PeerFutureState) {
+        modtrace!("Channel/NextFuture: state {:?} -> {:?}", self.state, new_state);
+        self.state = new_state;
+    }
+
+    fn transmit(&mut self, waker: &Waker, event_id: EventId) -> Poll<Result<T, ChRecvError>> {
+        self.set_state(PeerFutureState::Exchanging);
+        self.rc.reg_receiver(
+            waker,
+            event_id,
+            (&mut self.data) as *mut Option<T> as *mut (),
+        );
+
+        Poll::Pending
+    }
+
+    fn close(&mut self, event_id: EventId) -> Poll<Result<T, ChRecvError>> {
+        if !self.rc.rt.is_awoken(event_id) {
+            return Poll::Pending; // not our event, ignore the poll
+        }
+
+        self.set_state(PeerFutureState::Closed);
+        return if unsafe { self.rc.exchange::<T>() } {
+            Poll::Ready(Ok(self.data.take().unwrap()))
+        } else {
+            Poll::Ready(Err(ChRecvError))
+        };
+    }
+}
+
+impl<'runtime, T, ReactorT: Reactor> Drop for ChNextFuture<'runtime, T, ReactorT> {
+    fn drop(&mut self) {
+        modtrace!("Channel/NextFuture::drop()");
+        self.rc.cancel_receiver();
+    }
+}
+
+impl<'runtime, T, ReactorT: Reactor> Future for ChNextFuture<'runtime, T, ReactorT> {
+    type Output = Result<T, ChRecvError>;
+
+    fn poll(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Self::Output> {
+        let event_id = self.get_event_id();
+        modtrace!("Channel/NextFuture::poll()");
+
+        // Unsafe usage: this function does not moves out data from self, as required by
+        // Pin::map_unchecked_mut().
+        let this = unsafe { self.get_unchecked_mut() };
+
+        return match this.state {
+            PeerFutureState::Created => this.transmit(&ctx.waker(), event_id), // always Pending
+            PeerFutureState::Exchanging => this.close(event_id),
+            PeerFutureState::Closed => {
+                panic!("aiur: channel::NextFuture was polled after completion.")
+            }
+        };
+    }
+}
+
