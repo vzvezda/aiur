@@ -70,7 +70,7 @@ impl<'runtime, ReactorT: Reactor> RuntimeOneshot<'runtime, ReactorT> {
 }
 
 // -----------------------------------------------------------------------------------------------
-// Sender's end of the channel
+// Sender's end of the oneshot
 pub struct Sender<'runtime, T, ReactorT: Reactor> {
     inner: SenderInner<'runtime, T, ReactorT>, // use inner to hide enum internals
 }
@@ -127,7 +127,7 @@ struct SenderFuture<'runtime, T, ReactorT: Reactor> {
     state: PeerFutureState,
 }
 
-// This just makes the get_event_id() method in TimerFuture
+// This just adds the get_event_id() method to SenderFuture
 impl<'runtime, T, ReactorT: Reactor> GetEventId for SenderFuture<'runtime, T, ReactorT> {}
 
 impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
