@@ -44,28 +44,40 @@ impl<'runtime, ReactorT: Reactor> RuntimeChannel<'runtime, ReactorT> {
         Self { rt, channel_id }
     }
 
-    fn add_sender(&self, waker: &Waker, sender_event_id: EventId, pointer: *mut ()) {
+    fn add_sender_fut(&self, waker: &Waker, sender_event_id: EventId, pointer: *mut ()) {
         self.rt
             .channels()
-            .add_sender(self.channel_id, waker.clone(), sender_event_id, pointer);
+            .add_sender_fut(self.channel_id, waker.clone(), sender_event_id, pointer);
     }
 
-    fn reg_receiver(&self, waker: &Waker, receiver_event_id: EventId, pointer: *mut ()) {
+    fn reg_receiver_fut(&self, waker: &Waker, receiver_event_id: EventId, pointer: *mut ()) {
         self.rt
             .channels()
-            .reg_receiver(self.channel_id, waker.clone(), receiver_event_id, pointer);
+            .reg_receiver_fut(self.channel_id, waker.clone(), receiver_event_id, pointer);
     }
 
     unsafe fn exchange<T>(&self) -> bool {
         self.rt.channels().exchange::<T>(self.channel_id)
     }
 
-    fn cancel_sender(&self) {
-        self.rt.channels().cancel_sender(self.channel_id);
+    fn inc_sender(&self) {
+        self.rt.channels().inc_sender(self.channel_id);
     }
 
-    fn cancel_receiver(&self) {
-        self.rt.channels().cancel_receiver(self.channel_id);
+    fn dec_sender(&self) {
+        self.rt.channels().dec_sender(self.channel_id);
+    }
+
+    fn dec_receiver(&self) {
+        self.rt.channels().dec_receiver(self.channel_id);
+    }
+
+    fn cancel_sender_fut(&self, event_id: EventId) {
+        self.rt.channels().cancel_sender_fut(self.channel_id, event_id);
+    }
+
+    fn cancel_receiver_fut(&self) {
+        self.rt.channels().cancel_receiver_fut(self.channel_id);
     }
 }
 
@@ -78,8 +90,10 @@ pub struct ChSender<'runtime, T, ReactorT: Reactor> {
 
 impl<'runtime, T, ReactorT: Reactor> ChSender<'runtime, T, ReactorT> {
     fn new(rt: &'runtime Runtime<ReactorT>, channel_id: ChannelId) -> Self {
+        let rc = RuntimeChannel::new(rt, channel_id);
+        rc.inc_sender(); 
         Self {
-            rc: RuntimeChannel::new(rt, channel_id),
+            rc,
             temp: PhantomData,
         }
     }
@@ -89,7 +103,26 @@ impl<'runtime, T, ReactorT: Reactor> ChSender<'runtime, T, ReactorT> {
     }
 }
 
-// TODO: impl Clone
+// Sender is clonable: having many senders are ok
+impl<'runtime, T, ReactorT: Reactor> Clone for ChSender<'runtime, T, ReactorT> {
+    fn clone(&self) -> Self {
+        // new() also increments sender's counters
+        Self::new(self.rc.rt, self.rc.channel_id)
+    }
+}
+
+impl<'runtime, T, ReactorT: Reactor> Drop for ChSender<'runtime, T, ReactorT> {
+    fn drop(&mut self) {
+        // we have a -1 Sender. BTW if this is possible to have a future:
+        //    let sender = ...
+        //    let fut = sender.send(5);
+        //    drop(sender)  <-- counter is decremented to 0, but channel is still alive
+        //    fut.await; <-- channel is released as soon as this future dropped
+        // answer: not possible, 'fut' borrows 'sender', so it cannot be dropped.
+        self.rc.dec_sender();
+    }
+}
+
 
 // -----------------------------------------------------------------------------------------------
 // Receiver's end of the channel
@@ -108,6 +141,12 @@ impl<'runtime, T, ReactorT: Reactor> ChReceiver<'runtime, T, ReactorT> {
 
     pub async fn next(&mut self) -> Result<T, ChRecvError> {
         ChNextFuture::new(&self.rc).await
+    }
+}
+
+impl<'runtime, T, ReactorT: Reactor> Drop for ChReceiver<'runtime, T, ReactorT> {
+    fn drop(&mut self) {
+        self.rc.dec_receiver();
     }
 }
 
@@ -132,22 +171,28 @@ impl<'runtime, T, ReactorT: Reactor> GetEventId for ChSenderFuture<'runtime, T, 
 
 impl<'runtime, T, ReactorT: Reactor> ChSenderFuture<'runtime, T, ReactorT> {
     fn new(rc: &RuntimeChannel<'runtime, ReactorT>, value: T) -> Self {
+        let rc = RuntimeChannel::new(rc.rt, rc.channel_id);
+        rc.inc_sender();
         Self {
-            rc: RuntimeChannel::new(rc.rt, rc.channel_id),
+            rc,
             data: Some(value),
             state: PeerFutureState::Created,
         }
     }
 
     fn set_state(&mut self, new_state: PeerFutureState) {
-        modtrace!("Channel/SenderFuture: state {:?} -> {:?}", self.state, new_state);
+        modtrace!(
+            "Channel/SenderFuture: state {:?} -> {:?}",
+            self.state,
+            new_state
+        );
         self.state = new_state;
     }
 
     fn transmit(&mut self, waker: &Waker, event_id: EventId) -> Poll<Result<(), T>> {
         self.set_state(PeerFutureState::Exchanging);
 
-        self.rc.add_sender(
+        self.rc.add_sender_fut(
             waker,
             event_id,
             (&mut self.data) as *mut Option<T> as *mut (),
@@ -192,10 +237,27 @@ impl<'runtime, T, ReactorT: Reactor> Future for ChSenderFuture<'runtime, T, Reac
     }
 }
 
+impl<'runtime, T, ReactorT: Reactor> Drop for ChSenderFuture<'runtime, T, ReactorT> {
+    fn drop(&mut self) {
+        if matches!(self.state, PeerFutureState::Created) {
+            // ChSenderFuture was not polled (so it was not pinned) and it is not logically 
+            // safe to invoke get_event_id_unchecked(). And we really don't have to, because
+            // without poll there were not add_sender_fut() invoked.
+            modtrace!("Channel/ChSenderFuture::drop()");
+            return;
+        }
+
+        modtrace!("Channel/ChSenderFuture::drop() - cancel");
+        // unsafe: this object was pinned, so it is ok to invoke get_event_id_unchecked
+        let event_id = unsafe { self.get_event_id_unchecked() };
+        self.rc.cancel_sender_fut(event_id);
+    }
+}
+
 // -----------------------------------------------------------------------------------------------
 // Leaf Future returned by async fn next() in ChReceiver
 //
-// Receiver's ChNextFuture has a lot of copy paste with SenderFuture, but unification 
+// Receiver's ChNextFuture has a lot of copy paste with SenderFuture, but unification
 // produced more code and less clarity.
 pub struct ChNextFuture<'runtime, T, ReactorT: Reactor> {
     rc: RuntimeChannel<'runtime, ReactorT>,
@@ -215,13 +277,17 @@ impl<'runtime, T, ReactorT: Reactor> ChNextFuture<'runtime, T, ReactorT> {
     }
 
     fn set_state(&mut self, new_state: PeerFutureState) {
-        modtrace!("Channel/NextFuture: state {:?} -> {:?}", self.state, new_state);
+        modtrace!(
+            "Channel/NextFuture: state {:?} -> {:?}",
+            self.state,
+            new_state
+        );
         self.state = new_state;
     }
 
     fn transmit(&mut self, waker: &Waker, event_id: EventId) -> Poll<Result<T, ChRecvError>> {
         self.set_state(PeerFutureState::Exchanging);
-        self.rc.reg_receiver(
+        self.rc.reg_receiver_fut(
             waker,
             event_id,
             (&mut self.data) as *mut Option<T> as *mut (),
@@ -247,7 +313,7 @@ impl<'runtime, T, ReactorT: Reactor> ChNextFuture<'runtime, T, ReactorT> {
 impl<'runtime, T, ReactorT: Reactor> Drop for ChNextFuture<'runtime, T, ReactorT> {
     fn drop(&mut self) {
         modtrace!("Channel/NextFuture::drop()");
-        self.rc.cancel_receiver();
+        self.rc.cancel_receiver_fut();
     }
 }
 
@@ -271,4 +337,3 @@ impl<'runtime, T, ReactorT: Reactor> Future for ChNextFuture<'runtime, T, Reacto
         };
     }
 }
-
