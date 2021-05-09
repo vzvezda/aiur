@@ -118,6 +118,18 @@ enum PeerState {
     Dropped,
 }
 
+// Debug
+impl std::fmt::Debug for PeerState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PeerState::Created => f.write_str("Created"),
+            PeerState::Registered(..) => f.write_str("Registered"),
+            PeerState::Exchanged => f.write_str("Exchanged"),
+            PeerState::Dropped => f.write_str("Dropped"),
+        }
+    }
+}
+
 // This is a channel
 struct ChannelNode {
     id: ChannelId,
@@ -125,6 +137,7 @@ struct ChannelNode {
     recv_is_alive: bool,
     recv_future: PeerState,
     send_future: PeerState,
+    recv_exchanged: bool,
     send_queue: Vec<RegInfo>,
 }
 
@@ -136,12 +149,18 @@ impl ChannelNode {
             recv_is_alive: true,
             recv_future: PeerState::Created,
             send_future: PeerState::Created,
+            recv_exchanged: false,
             send_queue: Vec::new(), 
         }
     }
 
     fn add_sender_future(&mut self, reg_info: RegInfo) {
-        self.send_queue.push(reg_info);
+        if matches!(self.send_future, PeerState::Created) {
+            self.send_future = PeerState::Registered(reg_info);
+        }
+        else {
+            self.send_queue.push(reg_info);
+        }
     }
 
     fn reg_recv_future(&mut self, reg_info: RegInfo) {
@@ -168,6 +187,46 @@ impl ChannelNode {
     }
 
 }
+
+// Produce a state like "(C,R}". See the state machine chart in code below for meaning.
+impl std::fmt::Debug for ChannelNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.send_future {
+            PeerState::Created => f.write_str("(C,"),
+            PeerState::Registered(..) => {
+                if matches!(self.recv_future, PeerState::Registered(..)) {
+                    f.write_str("(R,")
+                } else if matches!(self.recv_future, PeerState::Created) {
+                    f.write_str("(R,")
+                } else {
+                    f.write_str("{R,")
+                }
+            }
+            PeerState::Exchanged => f.write_str("(E,"),
+            PeerState::Dropped => f.write_str("(D,"),
+        }?;
+
+        match self.recv_future {
+            PeerState::Created => f.write_str("C)"),
+            PeerState::Registered(..) => {
+                if matches!(self.send_future, PeerState::Created) {
+                    f.write_str("R)")
+                } else {
+                    f.write_str("R}")
+                }
+            }
+            PeerState::Exchanged => f.write_str("E)"),
+            PeerState::Dropped => {
+                if self.recv_exchanged && matches!(self.send_future, PeerState::Registered(..)) {
+                    f.write_str("D*)")
+                } else {
+                    f.write_str("D)")
+                }
+            }
+        }
+    }
+}
+
 
 struct InnerChannelRt {
     node: Option<ChannelNode>, // TODO: many channels
