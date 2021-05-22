@@ -7,7 +7,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
-use crate::channel_rt::ChannelId;
+use crate::channel_rt::{ChannelId, ExchangeResult};
 use crate::reactor::{EventId, GetEventId, Reactor};
 use crate::runtime::Runtime;
 
@@ -51,12 +51,15 @@ impl<'runtime, ReactorT: Reactor> RuntimeChannel<'runtime, ReactorT> {
     }
 
     fn reg_receiver_fut(&self, waker: &Waker, receiver_event_id: EventId, pointer: *mut ()) {
-        self.rt
-            .channels()
-            .reg_receiver_fut(self.channel_id, waker.clone(), receiver_event_id, pointer);
+        self.rt.channels().reg_receiver_fut(
+            self.channel_id,
+            waker.clone(),
+            receiver_event_id,
+            pointer,
+        );
     }
 
-    unsafe fn exchange<T>(&self) -> bool {
+    unsafe fn exchange<T>(&self) -> ExchangeResult {
         self.rt.channels().exchange::<T>(self.channel_id)
     }
 
@@ -73,7 +76,9 @@ impl<'runtime, ReactorT: Reactor> RuntimeChannel<'runtime, ReactorT> {
     }
 
     fn cancel_sender_fut(&self, event_id: EventId) {
-        self.rt.channels().cancel_sender_fut(self.channel_id, event_id);
+        self.rt
+            .channels()
+            .cancel_sender_fut(self.channel_id, event_id);
     }
 
     fn cancel_receiver_fut(&self) {
@@ -91,7 +96,7 @@ pub struct ChSender<'runtime, T, ReactorT: Reactor> {
 impl<'runtime, T, ReactorT: Reactor> ChSender<'runtime, T, ReactorT> {
     fn new(rt: &'runtime Runtime<ReactorT>, channel_id: ChannelId) -> Self {
         let rc = RuntimeChannel::new(rt, channel_id);
-        rc.inc_sender(); 
+        rc.inc_sender();
         Self {
             rc,
             temp: PhantomData,
@@ -113,7 +118,7 @@ impl<'runtime, T, ReactorT: Reactor> Clone for ChSender<'runtime, T, ReactorT> {
 
 impl<'runtime, T, ReactorT: Reactor> Drop for ChSender<'runtime, T, ReactorT> {
     fn drop(&mut self) {
-        // we have a -1 Sender. BTW if this is possible to have a future:
+        // we have a -1 Sender. Question: is this possible to have a future:
         //    let sender = ...
         //    let fut = sender.send(5);
         //    drop(sender)  <-- counter is decremented to 0, but channel is still alive
@@ -122,7 +127,6 @@ impl<'runtime, T, ReactorT: Reactor> Drop for ChSender<'runtime, T, ReactorT> {
         self.rc.dec_sender();
     }
 }
-
 
 // -----------------------------------------------------------------------------------------------
 // Receiver's end of the channel
@@ -206,12 +210,31 @@ impl<'runtime, T, ReactorT: Reactor> ChSenderFuture<'runtime, T, ReactorT> {
             return Poll::Pending; // not our event, ignore the poll
         }
 
-        self.set_state(PeerFutureState::Closed);
-
-        return if unsafe { self.rc.exchange::<T>() } {
-            Poll::Ready(Ok(()))
-        } else {
-            Poll::Ready(Err(self.data.take().unwrap()))
+        // Let make the exchange. When both sender and receiver futures are registered,
+        // the receiver would be first to awake and make the actual memory swap. Sender awakes
+        // after receiver and it receives a value if value were delivered to receiver.
+        // It can also happen that sender was awoken because receiver is dropped,
+        // and it would receive disconnected event.
+        return match unsafe { self.rc.exchange::<T>() } {
+            ExchangeResult::Done =>
+            // exchange was perfect, return value to app
+            {
+                self.set_state(PeerFutureState::Closed);
+                Poll::Ready(Ok(()))
+            }
+            ExchangeResult::Disconnected =>
+            // receiver is gone, nothing can be sent to this channel anymore
+            {
+                self.set_state(PeerFutureState::Closed);
+                Poll::Ready(Err(self.data.take().unwrap()))
+            }
+            ExchangeResult::TryLater =>
+            // receiver future gone but receiver channel object is still alive,
+            // will wait for a new attempt.
+            {
+                // self.set_state(PeerFutureState::Exchanging);
+                Poll::Pending
+            }
         };
     }
 }
@@ -240,7 +263,7 @@ impl<'runtime, T, ReactorT: Reactor> Future for ChSenderFuture<'runtime, T, Reac
 impl<'runtime, T, ReactorT: Reactor> Drop for ChSenderFuture<'runtime, T, ReactorT> {
     fn drop(&mut self) {
         if matches!(self.state, PeerFutureState::Created) {
-            // ChSenderFuture was not polled (so it was not pinned) and it is not logically 
+            // ChSenderFuture was not polled (so it was not pinned) and it is not logically
             // safe to invoke get_event_id_unchecked(). And we really don't have to, because
             // without poll there were not add_sender_fut() invoked.
             modtrace!("Channel/ChSenderFuture::drop()");
@@ -301,11 +324,29 @@ impl<'runtime, T, ReactorT: Reactor> ChNextFuture<'runtime, T, ReactorT> {
             return Poll::Pending; // not our event, ignore the poll
         }
 
-        self.set_state(PeerFutureState::Closed);
-        return if unsafe { self.rc.exchange::<T>() } {
-            Poll::Ready(Ok(self.data.take().unwrap()))
-        } else {
-            Poll::Ready(Err(ChRecvError))
+        // Let make the exchange. When both sender and receiver futures are registered,
+        // the receiver would be first to awake and make the actual memory swap. It can
+        // also happen that receiver was awoken because all sender channels are dropped,
+        // and it would receive disconnected event.
+        return match unsafe { self.rc.exchange::<T>() } {
+            ExchangeResult::Done =>
+            // exchange was perfect, return value to app
+            {
+                self.set_state(PeerFutureState::Closed);
+                Poll::Ready(Ok(self.data.take().unwrap()))
+            }
+            ExchangeResult::Disconnected =>
+            // all senders are gone, no more values to recv
+            {
+                self.set_state(PeerFutureState::Closed);
+                Poll::Ready(Err(ChRecvError))
+            }
+            ExchangeResult::TryLater =>
+            // sender future gone, will wait for a new one
+            {
+                // self.set_state(PeerFutureState::Exchanging);
+                Poll::Pending
+            }
         };
     }
 }

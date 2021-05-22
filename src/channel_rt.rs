@@ -10,7 +10,7 @@ use crate::reactor::EventId;
 // enable/disable output of modtrace! macro
 const MODTRACE: bool = true;
 
-// Channel handle used by this low level channel API (which is only has crate visibility)
+// Channel handle used by this low level channel API, which is only has crate visibility.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub(crate) struct ChannelId(u32);
 
@@ -18,6 +18,13 @@ impl ChannelId {
     pub(crate) fn null() -> Self {
         ChannelId(0)
     }
+}
+
+// The result of exchange<T> for send/receive future
+pub(crate) enum ExchangeResult {
+    Done,
+    Disconnected,
+    TryLater, // a new state in compare to oneshot
 }
 
 // Runtime API for Channel futures
@@ -66,7 +73,7 @@ impl ChannelRt {
             .reg_receiver_fut(channel_id, waker, event_id, data);
     }
 
-    pub(crate) unsafe fn exchange<T>(&self, channel_id: ChannelId) -> bool {
+    pub(crate) unsafe fn exchange<T>(&self, channel_id: ChannelId) -> ExchangeResult {
         self.inner.borrow_mut().exchange::<T>(channel_id)
     }
 
@@ -83,7 +90,9 @@ impl ChannelRt {
     }
 
     pub(crate) fn cancel_sender_fut(&self, channel_id: ChannelId, event_id: EventId) {
-        self.inner.borrow_mut().cancel_sender_fut(channel_id, event_id);
+        self.inner
+            .borrow_mut()
+            .cancel_sender_fut(channel_id, event_id);
     }
 
     pub(crate) fn cancel_receiver_fut(&self, channel_id: ChannelId) {
@@ -109,124 +118,100 @@ impl RegInfo {
     }
 }
 
-// Where is a sender or  receiver in the communication phase
-#[derive(Clone)] // Cloning the Waker in aiur does not involve allocation
-enum PeerState {
+// This is the state of the receiver
+enum RxState {
     Created,
     Registered(RegInfo),
     Exchanged,
-    Dropped,
+    Gone,
 }
 
-// Debug
-impl std::fmt::Debug for PeerState {
+// This is a state for senders
+enum TxState {
+    Registered(RegInfo),
+    Transmitted(RegInfo),
+}
+
+impl std::fmt::Debug for RxState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PeerState::Created => f.write_str("Created"),
-            PeerState::Registered(..) => f.write_str("Registered"),
-            PeerState::Exchanged => f.write_str("Exchanged"),
-            PeerState::Dropped => f.write_str("Dropped"),
+            RxState::Created => f.write_str("Created"),
+            RxState::Registered(..) => f.write_str("Registered"),
+            RxState::Exchanged => f.write_str("Exchanged"),
+            RxState::Gone => f.write_str("Gone"),
         }
     }
 }
 
-// This is a channel
+impl std::fmt::Debug for TxState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TxState::Registered(..) => f.write_str("Registered"),
+            TxState::Transmitted(..) => f.write_str("Transmitted"),
+        }
+    }
+}
+
+// This is a channel object
 struct ChannelNode {
     id: ChannelId,
+    rx_state: RxState,
+    tx_queue: Vec<TxState>,
     senders_alive: u32,
-    recv_is_alive: bool,
-    recv_future: PeerState,
-    send_future: PeerState,
-    recv_exchanged: bool,
-    send_queue: Vec<RegInfo>,
 }
 
 impl ChannelNode {
     fn new(channel_id: ChannelId) -> Self {
         Self {
             id: channel_id,
-            senders_alive: 0, // incremented by ChSender::new()
-            recv_is_alive: true,
-            recv_future: PeerState::Created,
-            send_future: PeerState::Created,
-            recv_exchanged: false,
-            send_queue: Vec::new(), 
+            rx_state: RxState::Created,
+            tx_queue: Vec::new(),
+            senders_alive: 0, // intially incremented by ChSender::new()
         }
     }
 
     fn add_sender_future(&mut self, reg_info: RegInfo) {
-        if matches!(self.send_future, PeerState::Created) {
-            self.send_future = PeerState::Registered(reg_info);
-        }
-        else {
-            self.send_queue.push(reg_info);
-        }
+        self.tx_queue.push(TxState::Registered(reg_info));
     }
 
     fn reg_recv_future(&mut self, reg_info: RegInfo) {
-        self.recv_future = PeerState::Registered(reg_info);
+        self.rx_state = RxState::Registered(reg_info);
     }
 
     fn inc_sender(&mut self) {
         self.senders_alive += 1;
-        modtrace!("ChannelRt: {:?} inc senders to {}", self.id, self.senders_alive);
+        modtrace!(
+            "ChannelRt: {:?} inc senders to {}",
+            self.id,
+            self.senders_alive
+        );
     }
 
     fn dec_sender(&mut self) {
         self.senders_alive -= 1;
-        modtrace!("ChannelRt: {:?} dec senders to {}", self.id, self.senders_alive);
+        modtrace!(
+            "ChannelRt: {:?} dec senders to {}",
+            self.id,
+            self.senders_alive
+        );
     }
 
     fn dec_receiver(&mut self) {
-        self.recv_is_alive = false;
-        modtrace!("ChannelRt: {:?} receiver has been dropped", self.id);
+        self.rx_state = RxState::Gone;
+        modtrace!("ChannelRt: {:?} receiver channel been destroyed", self.id);
     }
 
     fn is_channel_alive(&self) -> bool {
-        self.senders_alive > 0 || self.recv_is_alive
+        self.senders_alive > 0 || !matches!(self.rx_state, RxState::Gone)
     }
-
 }
 
 // Produce a state like "(C,R}". See the state machine chart in code below for meaning.
 impl std::fmt::Debug for ChannelNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.send_future {
-            PeerState::Created => f.write_str("(C,"),
-            PeerState::Registered(..) => {
-                if matches!(self.recv_future, PeerState::Registered(..)) {
-                    f.write_str("(R,")
-                } else if matches!(self.recv_future, PeerState::Created) {
-                    f.write_str("(R,")
-                } else {
-                    f.write_str("{R,")
-                }
-            }
-            PeerState::Exchanged => f.write_str("(E,"),
-            PeerState::Dropped => f.write_str("(D,"),
-        }?;
-
-        match self.recv_future {
-            PeerState::Created => f.write_str("C)"),
-            PeerState::Registered(..) => {
-                if matches!(self.send_future, PeerState::Created) {
-                    f.write_str("R)")
-                } else {
-                    f.write_str("R}")
-                }
-            }
-            PeerState::Exchanged => f.write_str("E)"),
-            PeerState::Dropped => {
-                if self.recv_exchanged && matches!(self.send_future, PeerState::Registered(..)) {
-                    f.write_str("D*)")
-                } else {
-                    f.write_str("D)")
-                }
-            }
-        }
+        todo!()
     }
 }
-
 
 struct InnerChannelRt {
     node: Option<ChannelNode>, // TODO: many channels
@@ -279,14 +264,27 @@ impl InnerChannelRt {
         let rx_data = std::mem::transmute::<*mut (), *mut Option<T>>(rx_data);
         std::mem::swap(&mut *tx_data, &mut *rx_data);
 
-        modtrace!("OneshotRt: exchange<T> mem::swap() just happened");
+        modtrace!("ChannelRt: exchange<T> mem::swap() just happened");
     }
 
-    unsafe fn exchange<T>(&mut self, channel_id: ChannelId) -> bool {
+    unsafe fn exchange<T>(&mut self, channel_id: ChannelId) -> ExchangeResult {
         let node_mut = self.get_node_mut(channel_id);
 
-
         todo!()
+    }
+
+    fn get_event_id_for_node(node: &ChannelNode) -> Option<EventId> {
+
+        if matches!(node.rx_state, RxState::Created) {
+            None
+        }
+
+        if node.tx_queue.empty() {
+            None
+        }
+
+        // todo!()
+        None
     }
 
     fn awake_and_get_event_id(&mut self) -> Option<EventId> {
@@ -294,11 +292,8 @@ impl InnerChannelRt {
             return None;
         }
 
-
-        None
+        Self::get_event_id_for_node(self.get_node_mut(ChannelId(1)))
     }
-
-
 
     fn inc_sender(&mut self, channel_id: ChannelId) {
         self.get_node_mut(channel_id).inc_sender();
