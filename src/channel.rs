@@ -390,7 +390,7 @@ impl<'runtime, T, ReactorT: Reactor> Future for ChNextFuture<'runtime, T, Reacto
 /* Can be removed. This is how I verified that futures are unpin
 #[cfg(test)]
 mod tests {
-    pub use super::*;
+    use super::*;
 
     struct ZeroReactor {}
     impl Reactor for ZeroReactor {

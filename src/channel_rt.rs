@@ -352,3 +352,17 @@ impl InnerChannelRt {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn api_test() {
+        let mut crt = InnerChannelRt::new();
+
+        let channel_id = crt.create();
+        crt.inc_sender(channel_id);
+        assert!(crt.awake_and_get_event_id().is_none());
+    }
+}
+
