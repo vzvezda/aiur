@@ -73,8 +73,12 @@ impl ChannelRt {
             .reg_receiver_fut(channel_id, waker, event_id, data);
     }
 
-    pub(crate) unsafe fn exchange<T>(&self, channel_id: ChannelId) -> ExchangeResult {
-        self.inner.borrow_mut().exchange::<T>(channel_id)
+    pub(crate) unsafe fn exchange_sender<T>(&self, channel_id: ChannelId) -> ExchangeResult {
+        self.inner.borrow_mut().exchange_sender::<T>(channel_id)
+    }
+
+    pub(crate) unsafe fn exchange_receiver<T>(&self, channel_id: ChannelId) -> ExchangeResult {
+        self.inner.borrow_mut().exchange_receiver::<T>(channel_id)
     }
 
     pub(crate) fn inc_sender(&self, channel_id: ChannelId) {
@@ -122,7 +126,6 @@ impl RegInfo {
 enum RxState {
     Created,
     Registered(RegInfo),
-    Exchanged,
     Gone,
 }
 
@@ -137,7 +140,6 @@ impl std::fmt::Debug for RxState {
         match self {
             RxState::Created => f.write_str("Created"),
             RxState::Registered(..) => f.write_str("Registered"),
-            RxState::Exchanged => f.write_str("Exchanged"),
             RxState::Gone => f.write_str("Gone"),
         }
     }
@@ -267,7 +269,13 @@ impl InnerChannelRt {
         modtrace!("ChannelRt: exchange<T> mem::swap() just happened");
     }
 
-    unsafe fn exchange<T>(&mut self, channel_id: ChannelId) -> ExchangeResult {
+    unsafe fn exchange_sender<T>(&mut self, channel_id: ChannelId) -> ExchangeResult {
+        let node_mut = self.get_node_mut(channel_id);
+
+        todo!()
+    }
+
+    unsafe fn exchange_receiver<T>(&mut self, channel_id: ChannelId) -> ExchangeResult {
         let node_mut = self.get_node_mut(channel_id);
 
         todo!()
@@ -276,14 +284,33 @@ impl InnerChannelRt {
     fn get_event_id_for_node(node: &ChannelNode) -> Option<EventId> {
 
         if matches!(node.rx_state, RxState::Created) {
-            None
+            return None;
         }
 
-        if node.tx_queue.empty() {
-            None
+        if node.tx_queue.is_empty() && node.senders_alive > 0 {
+            return None; // no sender futures
         }
 
-        // todo!()
+        // first awake the receiver. sender cannot be in Created state, other state like
+        // Registered or Dropped are ok.
+        match &node.rx_state {
+            RxState::Registered(ref rx_reg_info) => {
+                rx_reg_info.waker.wake_by_ref();
+                return Some(rx_reg_info.event_id);
+            }
+            _ => (),
+        }
+
+        // Awake the sender, the receiver cannnot be in Created state, but other states like
+        // Exhanged or Dropped are ok.
+        match &node.tx_queue[0] {
+            TxState::Registered(ref tx_reg_info) => {
+                tx_reg_info.waker.wake_by_ref();
+                return Some(tx_reg_info.event_id);
+            }
+            _ => (),
+        }
+
         None
     }
 
@@ -324,3 +351,4 @@ impl InnerChannelRt {
         todo!()
     }
 }
+

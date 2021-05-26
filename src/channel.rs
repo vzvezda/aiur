@@ -3,7 +3,7 @@
 // |' | '|   (c) 2020 - present, Vladimir Zvezda
 //   / \
 use std::future::Future;
-use std::marker::PhantomData;
+use std::marker::{PhantomData, PhantomPinned};
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
@@ -59,8 +59,12 @@ impl<'runtime, ReactorT: Reactor> RuntimeChannel<'runtime, ReactorT> {
         );
     }
 
-    unsafe fn exchange<T>(&self) -> ExchangeResult {
-        self.rt.channels().exchange::<T>(self.channel_id)
+    unsafe fn exchange_sender<T>(&self) -> ExchangeResult {
+        self.rt.channels().exchange_sender::<T>(self.channel_id)
+    }
+
+    unsafe fn exchange_receiver<T>(&self) -> ExchangeResult {
+        self.rt.channels().exchange_receiver::<T>(self.channel_id)
     }
 
     fn inc_sender(&self) {
@@ -168,6 +172,7 @@ struct ChSenderFuture<'runtime, T, ReactorT: Reactor> {
     rc: RuntimeChannel<'runtime, ReactorT>,
     data: Option<T>,
     state: PeerFutureState,
+    _pin: PhantomPinned, // we need the &data to be stable while pinned
 }
 
 // This just adds the get_event_id() method to SenderFuture
@@ -181,6 +186,7 @@ impl<'runtime, T, ReactorT: Reactor> ChSenderFuture<'runtime, T, ReactorT> {
             rc,
             data: Some(value),
             state: PeerFutureState::Created,
+            _pin: PhantomPinned,
         }
     }
 
@@ -215,7 +221,7 @@ impl<'runtime, T, ReactorT: Reactor> ChSenderFuture<'runtime, T, ReactorT> {
         // after receiver and it receives a value if value were delivered to receiver.
         // It can also happen that sender was awoken because receiver is dropped,
         // and it would receive disconnected event.
-        return match unsafe { self.rc.exchange::<T>() } {
+        return match unsafe { self.rc.exchange_sender::<T>() } {
             ExchangeResult::Done =>
             // exchange was perfect, return value to app
             {
@@ -286,6 +292,7 @@ pub struct ChNextFuture<'runtime, T, ReactorT: Reactor> {
     rc: RuntimeChannel<'runtime, ReactorT>,
     state: PeerFutureState,
     data: Option<T>,
+    _pin: PhantomPinned, // we need the &data to be stable while pinned
 }
 
 impl<'runtime, T, ReactorT: Reactor> GetEventId for ChNextFuture<'runtime, T, ReactorT> {}
@@ -296,6 +303,7 @@ impl<'runtime, T, ReactorT: Reactor> ChNextFuture<'runtime, T, ReactorT> {
             rc: RuntimeChannel::new(rc.rt, rc.channel_id),
             state: PeerFutureState::Created,
             data: None,
+            _pin: PhantomPinned,
         }
     }
 
@@ -328,7 +336,7 @@ impl<'runtime, T, ReactorT: Reactor> ChNextFuture<'runtime, T, ReactorT> {
         // the receiver would be first to awake and make the actual memory swap. It can
         // also happen that receiver was awoken because all sender channels are dropped,
         // and it would receive disconnected event.
-        return match unsafe { self.rc.exchange::<T>() } {
+        return match unsafe { self.rc.exchange_receiver::<T>() } {
             ExchangeResult::Done =>
             // exchange was perfect, return value to app
             {
@@ -378,3 +386,27 @@ impl<'runtime, T, ReactorT: Reactor> Future for ChNextFuture<'runtime, T, Reacto
         };
     }
 }
+
+/* Can be removed. This is how I verified that futures are unpin
+#[cfg(test)]
+mod tests {
+    pub use super::*;
+
+    struct ZeroReactor {}
+    impl Reactor for ZeroReactor {
+        fn wait(&self) -> EventId {
+            EventId::null()
+        }
+    }
+
+    fn is_unpin<T: Unpin>(_: T) {}
+
+    #[test]
+    fn channel_future_pinning() {
+        let rt = Runtime::new(ZeroReactor {});
+        let channel = rt.channels().create();
+        let rc = RuntimeChannel::new(&rt, channel);
+        is_unpin(ChNextFuture::<u32, ZeroReactor>::new(&rc));
+    }
+}
+*/
