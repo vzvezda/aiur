@@ -89,8 +89,8 @@ impl ChannelRt {
         self.inner.borrow_mut().dec_sender(channel_id);
     }
 
-    pub(crate) fn dec_receiver(&self, channel_id: ChannelId) {
-        self.inner.borrow_mut().dec_receiver(channel_id);
+    pub(crate) fn close_receiver(&self, channel_id: ChannelId) {
+        self.inner.borrow_mut().close_receiver(channel_id);
     }
 
     pub(crate) fn cancel_sender_fut(&self, channel_id: ChannelId, event_id: EventId) {
@@ -198,7 +198,7 @@ impl ChannelNode {
         );
     }
 
-    fn dec_receiver(&mut self) {
+    fn close_receiver(&mut self) {
         self.rx_state = RxState::Gone;
         modtrace!("ChannelRt: {:?} receiver channel been destroyed", self.id);
     }
@@ -331,8 +331,8 @@ impl InnerChannelRt {
         self.drop_channel_if_needed(channel_id);
     }
 
-    fn dec_receiver(&mut self, channel_id: ChannelId) {
-        self.get_node_mut(channel_id).dec_receiver();
+    fn close_receiver(&mut self, channel_id: ChannelId) {
+        self.get_node_mut(channel_id).close_receiver();
         self.drop_channel_if_needed(channel_id);
     }
 
@@ -357,11 +357,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn api_test() {
+    fn api_test_drop() {
         let mut crt = InnerChannelRt::new();
 
         let channel_id = crt.create();
         crt.inc_sender(channel_id);
+        assert!(crt.awake_and_get_event_id().is_none());
+        crt.dec_sender(channel_id);
+        assert!(crt.awake_and_get_event_id().is_none());
+        crt.close_receiver(channel_id);
         assert!(crt.awake_and_get_event_id().is_none());
     }
 }

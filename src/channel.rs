@@ -75,8 +75,8 @@ impl<'runtime, ReactorT: Reactor> RuntimeChannel<'runtime, ReactorT> {
         self.rt.channels().dec_sender(self.channel_id);
     }
 
-    fn dec_receiver(&self) {
-        self.rt.channels().dec_receiver(self.channel_id);
+    fn close_receiver(&self) {
+        self.rt.channels().close_receiver(self.channel_id);
     }
 
     fn cancel_sender_fut(&self, event_id: EventId) {
@@ -154,7 +154,7 @@ impl<'runtime, T, ReactorT: Reactor> ChReceiver<'runtime, T, ReactorT> {
 
 impl<'runtime, T, ReactorT: Reactor> Drop for ChReceiver<'runtime, T, ReactorT> {
     fn drop(&mut self) {
-        self.rc.dec_receiver();
+        self.rc.close_receiver();
     }
 }
 
