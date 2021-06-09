@@ -136,6 +136,35 @@ enum TxState {
     Exchanged(RegInfo),
 }
 
+// Only really used for tracing to specifiy if this is a sender or receiver that should be
+// awaken.
+#[derive(Copy, Clone)]
+enum Peer {
+    Sender,
+    Receiver,
+}
+
+struct WakeEvent {
+    peer: Peer,
+    waker: Waker,
+    event_id: EventId,
+}
+
+impl WakeEvent {
+    fn new(peer: Peer, waker: Waker, event_id: EventId) -> Self {
+        Self {
+            peer,
+            waker,
+            event_id,
+        }
+    }
+
+    fn wake(&self) -> EventId {
+        self.waker.wake_by_ref();
+        self.event_id
+    }
+}
+
 impl std::fmt::Debug for RxState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -209,27 +238,99 @@ impl ChannelNode {
     fn is_channel_alive(&self) -> bool {
         self.senders_alive > 0 || !matches!(self.rx_state, RxState::Gone)
     }
+
+    // This is the implementation for the runtime if this ChannelNode ready to produce any 
+    // event. It does not awake by itself.
+    fn get_wake_event(&self) -> Option<WakeEvent> {
+        // Verify if there is a sender future that just got its data transfered to a receiver,
+        // that should be awoken. It does not matter in what state the Receiver is.
+        if let Some(ref first_tx_state) = self.tx_queue.first() {
+            if let TxState::Exchanged(tx_reg_info) = first_tx_state {
+                return Some(WakeEvent::new(
+                    Peer::Sender,
+                    tx_reg_info.waker.clone(),
+                    tx_reg_info.event_id,
+                ));
+            }
+        }
+
+        if matches!(self.rx_state, RxState::Idle) {
+            return None; // Receiver alive but Idle -> nobody to awake
+        }
+
+        if self.tx_queue.is_empty() && self.senders_alive > 0 {
+            return None; // no sender futures right now, but there are alive senders
+        }
+
+        // Awake the re
+        match &self.rx_state {
+            RxState::Registered(ref rx_reg_info) => {
+                // the state of sender is that it either have TxState::Registered in queue,
+                // or sender_alive = 0.  This is verified by code above.
+                debug_assert!(!self.tx_queue.is_empty() || self.senders_alive == 0);
+
+                // We can awake receiver to either swap (TxState::Registered) or to receive
+                // ChannelClosed err.
+                return Some(WakeEvent::new(
+                    Peer::Receiver,
+                    rx_reg_info.waker.clone(),
+                    rx_reg_info.event_id,
+                ));
+            }
+            _ => (),
+        }
+
+        // When we are here, the receiver is not in Idle and not in Registered, which means
+        // it is in Gone.
+        debug_assert!(matches!(self.rx_state, RxState::Gone));
+
+        // We now can awake any sender futures one by one if there is any.
+        if let Some(first_tx_state) = self.tx_queue.first() {
+            // Btw sender future can be only in Registered state.
+            debug_assert!(matches!(first_tx_state, TxState::Registered(..)));
+
+            match first_tx_state {
+                TxState::Registered(first_tx_reg_info) => {
+                    return Some(WakeEvent::new(
+                        Peer::Sender,
+                        first_tx_reg_info.waker.clone(),
+                        first_tx_reg_info.event_id,
+                    ));
+                }
+
+                _ => (),
+            }
+        }
+
+        // We do not really have to have such nodes when both receiver is gone and all senders
+        // are gone as well. The runtime should remove such nodes and should not invoke this
+        // method anyway.
+        debug_assert!(self.senders_alive > 0);
+
+        // There are alive senders that does not have any active futures right now, means
+        // this node does not produce any event.
+        None
+    }
 }
 
 // Produce a state like "(C,R}". See the state machine chart in code below for meaning.
 impl std::fmt::Debug for ChannelNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-
         // (R <- [R+7]:3)
         f.write_str("(")?;
 
         match self.rx_state {
-            RxState::Idle => { f.write_str("Idle <- ") }
-            RxState::Registered(..) => { f.write_str("Reg <- ") }
-            RxState::Gone => {f.write_str("Gone <- ") }
+            RxState::Idle => f.write_str("Idle <- "),
+            RxState::Registered(..) => f.write_str("Reg <- "),
+            RxState::Gone => f.write_str("Gone <- "),
         }?;
 
         let tx_len = self.tx_queue.len();
 
         if tx_len > 0 {
             match self.tx_queue[0] {
-                TxState::Registered(..) => { f.write_str("[Reg") }
-                TxState::Exchanged(..) => { f.write_str("[Exch") }
+                TxState::Registered(..) => f.write_str("[Reg"),
+                TxState::Exchanged(..) => f.write_str("[Exch"),
             }?;
 
             if tx_len > 1 {
@@ -313,47 +414,7 @@ impl InnerChannelRt {
     }
 
     fn get_event_id_for_node(node: &ChannelNode) -> Option<EventId> {
-        if matches!(node.rx_state, RxState::Idle) {
-            return None;
-        }
-
-        if node.tx_queue.is_empty() && node.senders_alive > 0 {
-            return None; // no sender futures right now, but alive sender can reg one later
-        }
-
-        /*
-        // 
-        match &node.tx_queue[0] {
-            TxState::Exchanged(ref tx_reg_info) => {
-                tx_reg_info.waker.wake_by_ref();
-                return Some(tx_reg_info.event_id);
-            }
-            _ => (),
-        }
-
-
-        // first awake the receiver. 
-        match &node.rx_state {
-            RxState::Registered(ref rx_reg_info) => {
-                if matches!(node.tx_queue[0], TxState
-                rx_reg_info.waker.wake_by_ref();
-                return Some(rx_reg_info.event_id);
-            }
-            _ => (),
-        }
-
-        // Awake the sender, the receiver cannnot be in Idle state, but other states like
-        // Exhanged or Dropped are ok.
-        match &node.tx_queue[0] {
-            TxState::Registered(ref tx_reg_info) => {
-                tx_reg_info.waker.wake_by_ref();
-                return Some(tx_reg_info.event_id);
-            }
-            _ => (),
-        }
-        */
-
-        None
+        node.get_wake_event().map(|ev| ev.wake())
     }
 
     fn awake_and_get_event_id(&mut self) -> Option<EventId> {
