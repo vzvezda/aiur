@@ -21,6 +21,7 @@ impl ChannelId {
 }
 
 // The result of exchange<T> for send/receive future
+#[derive(PartialEq)]
 pub(crate) enum ExchangeResult {
     Done,
     Disconnected,
@@ -124,7 +125,7 @@ impl RegInfo {
 
 // This is the state of the receiver
 enum RxState {
-    Created,
+    Idle,
     Registered(RegInfo),
     Gone,
 }
@@ -132,13 +133,13 @@ enum RxState {
 // This is a state for senders
 enum TxState {
     Registered(RegInfo),
-    Transmitted(RegInfo),
+    Exchanged(RegInfo),
 }
 
 impl std::fmt::Debug for RxState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RxState::Created => f.write_str("Created"),
+            RxState::Idle => f.write_str("Idle"),
             RxState::Registered(..) => f.write_str("Registered"),
             RxState::Gone => f.write_str("Gone"),
         }
@@ -149,7 +150,7 @@ impl std::fmt::Debug for TxState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TxState::Registered(..) => f.write_str("Registered"),
-            TxState::Transmitted(..) => f.write_str("Transmitted"),
+            TxState::Exchanged(..) => f.write_str("Exchanged"),
         }
     }
 }
@@ -164,41 +165,43 @@ struct ChannelNode {
 
 impl ChannelNode {
     fn new(channel_id: ChannelId) -> Self {
-        Self {
+        let node = Self {
             id: channel_id,
-            rx_state: RxState::Created,
+            rx_state: RxState::Idle,
             tx_queue: Vec::new(),
             senders_alive: 0, // intially incremented by ChSender::new()
-        }
+        };
+
+        modtrace!("ChannelRt: new {:?}", node);
+        node
     }
 
     fn add_sender_future(&mut self, reg_info: RegInfo) {
+        let old_self = format!("{:?}", self); // fix alloc here and elsewhere
         self.tx_queue.push(TxState::Registered(reg_info));
+        modtrace!("ChannelRt: add sender future {} -> {:?} ", old_self, self);
     }
 
     fn reg_recv_future(&mut self, reg_info: RegInfo) {
+        let old_self = format!("{:?}", self);
         self.rx_state = RxState::Registered(reg_info);
+        modtrace!("ChannelRt: reg sender future {} -> {:?} ", old_self, self);
     }
 
     fn inc_sender(&mut self) {
+        let old_self = format!("{:?}", self);
         self.senders_alive += 1;
-        modtrace!(
-            "ChannelRt: {:?} inc senders to {}",
-            self.id,
-            self.senders_alive
-        );
+        modtrace!("ChannelRt: inc senders {} -> {:?} ", old_self, self);
     }
 
     fn dec_sender(&mut self) {
+        let old_self = format!("{:?}", self);
         self.senders_alive -= 1;
-        modtrace!(
-            "ChannelRt: {:?} dec senders to {}",
-            self.id,
-            self.senders_alive
-        );
+        modtrace!("ChannelRt: dec senders {} -> {:?} ", old_self, self);
     }
 
     fn close_receiver(&mut self) {
+        let old_self = format!("{:?}", self);
         self.rx_state = RxState::Gone;
         modtrace!("ChannelRt: {:?} receiver channel been destroyed", self.id);
     }
@@ -211,7 +214,35 @@ impl ChannelNode {
 // Produce a state like "(C,R}". See the state machine chart in code below for meaning.
 impl std::fmt::Debug for ChannelNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!()
+
+        // (R <- [R+7]:3)
+        f.write_str("(")?;
+
+        match self.rx_state {
+            RxState::Idle => { f.write_str("Idle <- ") }
+            RxState::Registered(..) => { f.write_str("Reg <- ") }
+            RxState::Gone => {f.write_str("Gone <- ") }
+        }?;
+
+        let tx_len = self.tx_queue.len();
+
+        if tx_len > 0 {
+            match self.tx_queue[0] {
+                TxState::Registered(..) => { f.write_str("[Reg") }
+                TxState::Exchanged(..) => { f.write_str("[Exch") }
+            }?;
+
+            if tx_len > 1 {
+                f.write_fmt(format_args!(",..+{}]:", tx_len - 1))?;
+            }
+            f.write_str("]:")?;
+        } else {
+            f.write_str("[0]:")?;
+        }
+
+        f.write_fmt(format_args!("{}", self.senders_alive))?;
+
+        f.write_str(")")
     }
 }
 
@@ -228,7 +259,7 @@ impl InnerChannelRt {
         assert!(self.node.is_none());
         let id = ChannelId(1);
         self.node = Some(ChannelNode::new(id));
-        modtrace!("ChannelRt: new channel has been created: {:?}", id);
+        modtrace!("ChannelRt: new channel has been Idle: {:?}", id);
         id
     }
 
@@ -282,26 +313,36 @@ impl InnerChannelRt {
     }
 
     fn get_event_id_for_node(node: &ChannelNode) -> Option<EventId> {
-
-        if matches!(node.rx_state, RxState::Created) {
+        if matches!(node.rx_state, RxState::Idle) {
             return None;
         }
 
         if node.tx_queue.is_empty() && node.senders_alive > 0 {
-            return None; // no sender futures
+            return None; // no sender futures right now, but alive sender can reg one later
         }
 
-        // first awake the receiver. sender cannot be in Created state, other state like
-        // Registered or Dropped are ok.
+        /*
+        // 
+        match &node.tx_queue[0] {
+            TxState::Exchanged(ref tx_reg_info) => {
+                tx_reg_info.waker.wake_by_ref();
+                return Some(tx_reg_info.event_id);
+            }
+            _ => (),
+        }
+
+
+        // first awake the receiver. 
         match &node.rx_state {
             RxState::Registered(ref rx_reg_info) => {
+                if matches!(node.tx_queue[0], TxState
                 rx_reg_info.waker.wake_by_ref();
                 return Some(rx_reg_info.event_id);
             }
             _ => (),
         }
 
-        // Awake the sender, the receiver cannnot be in Created state, but other states like
+        // Awake the sender, the receiver cannnot be in Idle state, but other states like
         // Exhanged or Dropped are ok.
         match &node.tx_queue[0] {
             TxState::Registered(ref tx_reg_info) => {
@@ -310,6 +351,7 @@ impl InnerChannelRt {
             }
             _ => (),
         }
+        */
 
         None
     }
@@ -354,7 +396,48 @@ impl InnerChannelRt {
 
 #[cfg(test)]
 mod tests {
+    // Suddenly I understood that I can test the InnerChannelRt in isolation, so I have created
+    // API tests here. These tests below helped me to develop the InnerChannelRt.
     use super::*;
+
+    // This creates (Waker, EventId) that can be used for testing Channel Runtime API. The waker
+    // is kind of fake it will not awake anything, but we need one for channel peers registration.
+    fn create_fake_event(event_ptr: *const ()) -> (Waker, EventId) {
+        use std::task::{RawWaker, RawWakerVTable};
+
+        fn to_waker() -> std::task::Waker {
+            // Cloning the waker returns just the copy of the pointer.
+            unsafe fn clone_impl(raw_waker_ptr: *const ()) -> RawWaker {
+                // Just copy the pointer, which is works as a clone
+                RawWaker::new(raw_waker_ptr, &FAKE_WAKER_TABLE)
+            }
+
+            // Wake the future
+            unsafe fn wake_impl(raw_waker_ptr: *const ()) {
+                wake_by_ref_impl(raw_waker_ptr);
+            }
+
+            // Wake the future by ref
+            unsafe fn wake_by_ref_impl(_raw_waker_ptr: *const ()) {
+                // nothing here, this waker does not awake anything
+            }
+
+            // Drop the waker
+            unsafe fn drop_impl(_raw_waker_ptr: *const ()) {}
+
+            const FAKE_WAKER_TABLE: RawWakerVTable =
+                RawWakerVTable::new(clone_impl, wake_impl, wake_by_ref_impl, drop_impl);
+
+            let raw_waker = RawWaker::new(
+                std::ptr::null(), // Can i use it? I don't dereference raw waker ptr anywhere
+                &FAKE_WAKER_TABLE,
+            );
+
+            unsafe { Waker::from_raw(raw_waker) }
+        }
+
+        return (to_waker(), EventId(event_ptr)); // TODO
+    }
 
     #[test]
     fn api_test_drop() {
@@ -368,5 +451,49 @@ mod tests {
         crt.close_receiver(channel_id);
         assert!(crt.awake_and_get_event_id().is_none());
     }
-}
 
+    #[test]
+    fn api_test_good_exhange() {
+        let mut crt = InnerChannelRt::new();
+
+        // TODO: we have UB here: mut reference sender data and *mut ptr in exhange.
+        // I think we should forget sender_data.
+
+        let mut sender_data: Option<u32> = Some(100);
+        let mut receiver_data: Option<u32> = None;
+
+        let mut sender_ptr = &mut sender_data as *mut Option<u32> as *mut ();
+        let mut receiver_ptr = &mut receiver_data as *mut Option<u32> as *mut ();
+
+        let (sender_waker, sender_event) = create_fake_event(sender_ptr);
+        let (receiver_waker, receiver_event) = create_fake_event(receiver_ptr);
+
+        let channel_id = crt.create();
+
+        crt.inc_sender(channel_id);
+        crt.reg_receiver_fut(channel_id, receiver_waker, receiver_event, receiver_ptr);
+        assert!(crt.awake_and_get_event_id().is_none(), "No event expected");
+        crt.add_sender_fut(channel_id, sender_waker, sender_event, sender_ptr);
+
+        // exchange for the receiver
+        let event = crt.awake_and_get_event_id();
+        assert!(event.is_some(), "It is time for event");
+        let event = event.unwrap();
+        assert!(event == receiver_event, "Receiver event expected");
+        assert!(
+            unsafe { crt.exchange_receiver::<Option<u32>>(channel_id) } == ExchangeResult::Done
+        );
+
+        // exchange the sender
+        let event = crt.awake_and_get_event_id();
+        assert!(event.is_some(), "It is time for event");
+        let event = event.unwrap();
+        assert!(event == sender_event, "Sender event expected");
+        assert!(unsafe { crt.exchange_sender::<Option<u32>>(channel_id) } == ExchangeResult::Done);
+
+        assert!(receiver_data.expect("Date expected in receiver after exchange") == 100);
+
+        crt.dec_sender(channel_id);
+        crt.close_receiver(channel_id);
+    }
+}

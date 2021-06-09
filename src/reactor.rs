@@ -26,7 +26,7 @@ pub trait TemporalReactor : Reactor {
 /// or by other means) and this id is kind of cheap method for leaf future to verify if execultor
 /// has invoked the poll() method because this future was awoken.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub struct EventId(*const ());
+pub struct EventId(pub(crate) *const ());
 
 impl EventId {
     pub fn null() -> Self {
