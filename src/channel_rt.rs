@@ -239,7 +239,7 @@ impl ChannelNode {
         self.senders_alive > 0 || !matches!(self.rx_state, RxState::Gone)
     }
 
-    // This is the implementation for the runtime if this ChannelNode ready to produce any 
+    // This is the implementation for the runtime if this ChannelNode ready to produce any
     // event. It does not awake by itself.
     fn get_wake_event(&self) -> Option<WakeEvent> {
         // Verify if there is a sender future that just got its data transfered to a receiver,
@@ -393,7 +393,7 @@ impl InnerChannelRt {
         self.get_node_mut(channel_id).reg_recv_future(reg_info);
     }
 
-    unsafe fn exhange_impl<T>(tx_data: *mut (), rx_data: *mut ()) {
+    unsafe fn exchange_impl<T>(tx_data: *mut (), rx_data: *mut ()) {
         let tx_data = std::mem::transmute::<*mut (), *mut Option<T>>(tx_data);
         let rx_data = std::mem::transmute::<*mut (), *mut Option<T>>(rx_data);
         std::mem::swap(&mut *tx_data, &mut *rx_data);
@@ -401,18 +401,81 @@ impl InnerChannelRt {
         modtrace!("ChannelRt: exchange<T> mem::swap() just happened");
     }
 
+    // This is invoked by Sender future and it should be asserted that there is a 
+    // sender future is Registered with either exchanged value or not. 
     unsafe fn exchange_sender<T>(&mut self, channel_id: ChannelId) -> ExchangeResult {
         let node_mut = self.get_node_mut(channel_id);
+        let old_node = format!("{:?}", node_mut);
 
-        todo!()
+        if let Some(first_tx_state) = node_mut.tx_queue.first_mut() {
+            match (&node_mut.rx_state, first_tx_state) {
+                (RxState::Gone, TxState::Registered(..)) => { 
+                    node_mut.tx_queue.remove(0);
+                    modtrace!("ChannelRt: awoken sender {} -> {:?}", old_node, node_mut);
+                    // Receiver is gone and sender still holds the value
+                    ExchangeResult::Disconnected
+                },
+                (_, TxState::Exchanged(..)) => {
+                    node_mut.tx_queue.remove(0);
+                    modtrace!("ChannelRt: awoken sender {} -> {:?}", old_node, node_mut);
+                    // This is a typical good exhange scenario that receiver has moved 
+                    // the value out of sender storage and replanced it with None.
+                    ExchangeResult::Done
+                },
+                (_,_) => {
+                    panic!("ChannelRt: exchange_sender unexpected state: {}", old_node);
+                }
+            }
+        }
+        else {
+            // do not invoke exchange_sender() when sender does not have a future registered
+            panic!("ChannelRt: exhange_sender with no sender: {}", old_node);
+        }
     }
 
+    // This is invoked by Receiver future and the precondition that receiver future has
+    // registered.
     unsafe fn exchange_receiver<T>(&mut self, channel_id: ChannelId) -> ExchangeResult {
         let node_mut = self.get_node_mut(channel_id);
+        let old_node = format!("{:?}", node_mut);
 
-        todo!()
+        if let Some(first_tx_state) = node_mut.tx_queue.first_mut() {
+            // Just do the actual data exchange between receiver and first sender in queue.
+            // It can happen that between we awake the receiver and it invokes exchange_receiver()
+            // there are one more future removed from tx_queue, but it does not matter, the 
+            // exchange with first sender is ok.
+            match (&node_mut.rx_state, &first_tx_state) {
+                (RxState::Registered(ref rx_reg_info), TxState::Registered(ref tx_reg_info)) => {
+                    Self::exchange_impl::<T>(rx_reg_info.data, tx_reg_info.data);
+                    node_mut.rx_state = RxState::Idle;
+                    *first_tx_state = TxState::Exchanged(tx_reg_info.clone());
+                    modtrace!("ChannelRt: mem replaced {} -> {:?}", old_node, node_mut);
+                    ExchangeResult::Done
+                }
+                // other state are not legal and should be asserted by Channel Futures:
+                //    * Receiver: it must not call exhange_receiver() if not in Registered state
+                //    * Sender: there should be no way exchange_receiver() is invoked while 
+                //              sender is in Exhanged state.
+                _ => panic!(
+                    "ChannelRt: exchange_receiver unexpected {:?} {:?}",
+                    node_mut.rx_state, first_tx_state
+                ),
+            }
+        } else {
+            // There is no sender future
+            if node_mut.senders_alive == 0 {
+                // The receiver might awoken because there is no senders anymore, so
+                // the sender's end of the channel is Disconnected.
+                ExchangeResult::Disconnected
+            } else {
+                // It looks like the sender future was dropped after Receiver future is awoken.
+                // Receiver can be awoken later.
+                ExchangeResult::TryLater
+            }
+        }
     }
 
+    // Awakes the waker and returns its EventId
     fn get_event_id_for_node(node: &ChannelNode) -> Option<EventId> {
         node.get_wake_event().map(|ev| ev.wake())
     }
