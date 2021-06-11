@@ -11,12 +11,18 @@ use crate::reactor::EventId;
 const MODTRACE: bool = true;
 
 // Channel handle used by this low level channel API, which is only has crate visibility.
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 pub(crate) struct ChannelId(u32);
 
 impl ChannelId {
     pub(crate) fn null() -> Self {
         ChannelId(0)
+    }
+}
+
+impl std::fmt::Debug for ChannelId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("chan:{}", self.0))
     }
 }
 
@@ -201,38 +207,63 @@ impl ChannelNode {
             senders_alive: 0, // intially incremented by ChSender::new()
         };
 
-        modtrace!("ChannelRt: new {:?}", node);
+        modtrace!("ChannelRt: new {:?} {:?}", channel_id, node);
         node
     }
 
     fn add_sender_future(&mut self, reg_info: RegInfo) {
         let old_self = format!("{:?}", self); // fix alloc here and elsewhere
         self.tx_queue.push(TxState::Registered(reg_info));
-        modtrace!("ChannelRt: add sender future {} -> {:?} ", old_self, self);
+        modtrace!(
+            "ChannelRt: {:?} add sender future {} -> {:?} ",
+            self.id,
+            old_self,
+            self
+        );
     }
 
     fn reg_recv_future(&mut self, reg_info: RegInfo) {
         let old_self = format!("{:?}", self);
         self.rx_state = RxState::Registered(reg_info);
-        modtrace!("ChannelRt: reg sender future {} -> {:?} ", old_self, self);
+        modtrace!(
+            "ChannelRt: {:?} reg receiver future {} -> {:?} ",
+            self.id,
+            old_self,
+            self
+        );
     }
 
     fn inc_sender(&mut self) {
         let old_self = format!("{:?}", self);
         self.senders_alive += 1;
-        modtrace!("ChannelRt: inc senders {} -> {:?} ", old_self, self);
+        modtrace!(
+            "ChannelRt: {:?} inc senders {} -> {:?} ",
+            self.id,
+            old_self,
+            self
+        );
     }
 
     fn dec_sender(&mut self) {
         let old_self = format!("{:?}", self);
         self.senders_alive -= 1;
-        modtrace!("ChannelRt: dec senders {} -> {:?} ", old_self, self);
+        modtrace!(
+            "ChannelRt: {:?} dec senders {} -> {:?} ",
+            self.id,
+            old_self,
+            self
+        );
     }
 
     fn close_receiver(&mut self) {
         let old_self = format!("{:?}", self);
         self.rx_state = RxState::Gone;
-        modtrace!("ChannelRt: {:?} receiver channel been destroyed", self.id);
+        modtrace!(
+            "ChannelRt: {:?} receiver gone {} -> {:?}",
+            self.id,
+            old_self,
+            self
+        );
     }
 
     fn is_channel_alive(&self) -> bool {
@@ -240,7 +271,7 @@ impl ChannelNode {
     }
 
     // This is the implementation for the runtime if this ChannelNode ready to produce any
-    // event. It does not awake by itself.
+    // event. It does not awake waker by itself.
     fn get_wake_event(&self) -> Option<WakeEvent> {
         // Verify if there is a sender future that just got its data transfered to a receiver,
         // that should be awoken. It does not matter in what state the Receiver is.
@@ -262,15 +293,15 @@ impl ChannelNode {
             return None; // no sender futures right now, but there are alive senders
         }
 
-        // Awake the re
+        // Awake the receiver if it is Registered
         match &self.rx_state {
             RxState::Registered(ref rx_reg_info) => {
                 // the state of sender is that it either have TxState::Registered in queue,
                 // or sender_alive = 0.  This is verified by code above.
                 debug_assert!(!self.tx_queue.is_empty() || self.senders_alive == 0);
 
-                // We can awake receiver to either swap (TxState::Registered) or to receive
-                // ChannelClosed err.
+                // We should awake receiver to either swap (if TxState::Registered) or to
+                // receive ChannelClosed err (no alive senders)
                 return Some(WakeEvent::new(
                     Peer::Receiver,
                     rx_reg_info.waker.clone(),
@@ -284,9 +315,9 @@ impl ChannelNode {
         // it is in Gone.
         debug_assert!(matches!(self.rx_state, RxState::Gone));
 
-        // We now can awake any sender futures one by one if there is any.
+        // We now can awake any sender futures one by one if there are any.
         if let Some(first_tx_state) = self.tx_queue.first() {
-            // Btw sender future can be only in Registered state.
+            // Btw sender future can be only in Registered state, verified by code above.
             debug_assert!(matches!(first_tx_state, TxState::Registered(..)));
 
             match first_tx_state {
@@ -360,7 +391,6 @@ impl InnerChannelRt {
         assert!(self.node.is_none());
         let id = ChannelId(1);
         self.node = Some(ChannelNode::new(id));
-        modtrace!("ChannelRt: new channel has been Idle: {:?}", id);
         id
     }
 
@@ -397,39 +427,52 @@ impl InnerChannelRt {
         let tx_data = std::mem::transmute::<*mut (), *mut Option<T>>(tx_data);
         let rx_data = std::mem::transmute::<*mut (), *mut Option<T>>(rx_data);
         std::mem::swap(&mut *tx_data, &mut *rx_data);
-
-        modtrace!("ChannelRt: exchange<T> mem::swap() just happened");
     }
 
-    // This is invoked by Sender future and it should be asserted that there is a 
-    // sender future is Registered with either exchanged value or not. 
+    // This is invoked by Sender future and it should be asserted that there is a
+    // sender future is Registered with either exchanged value or not.
     unsafe fn exchange_sender<T>(&mut self, channel_id: ChannelId) -> ExchangeResult {
         let node_mut = self.get_node_mut(channel_id);
         let old_node = format!("{:?}", node_mut);
 
         if let Some(first_tx_state) = node_mut.tx_queue.first_mut() {
             match (&node_mut.rx_state, first_tx_state) {
-                (RxState::Gone, TxState::Registered(..)) => { 
+                (RxState::Gone, TxState::Registered(..)) => {
                     node_mut.tx_queue.remove(0);
-                    modtrace!("ChannelRt: awoken sender {} -> {:?}", old_node, node_mut);
+                    modtrace!(
+                        "ChannelRt: {:?} awoken sender {} -> {:?}",
+                        channel_id,
+                        old_node,
+                        node_mut
+                    );
                     // Receiver is gone and sender still holds the value
                     ExchangeResult::Disconnected
-                },
+                }
                 (_, TxState::Exchanged(..)) => {
                     node_mut.tx_queue.remove(0);
-                    modtrace!("ChannelRt: awoken sender {} -> {:?}", old_node, node_mut);
-                    // This is a typical good exhange scenario that receiver has moved 
+                    modtrace!(
+                        "ChannelRt: {:?} awoken sender {} -> {:?}",
+                        channel_id,
+                        old_node,
+                        node_mut
+                    );
+                    // This is a typical good exhange scenario that receiver has moved
                     // the value out of sender storage and replanced it with None.
                     ExchangeResult::Done
-                },
-                (_,_) => {
-                    panic!("ChannelRt: exchange_sender unexpected state: {}", old_node);
+                }
+                (_, _) => {
+                    panic!(
+                        "ChannelRt: {:?} exchange_sender unexpected state: {}",
+                        channel_id, old_node
+                    );
                 }
             }
-        }
-        else {
+        } else {
             // do not invoke exchange_sender() when sender does not have a future registered
-            panic!("ChannelRt: exhange_sender with no sender: {}", old_node);
+            panic!(
+                "ChannelRt: {:?} exhange_sender with no sender: {}",
+                channel_id, old_node
+            );
         }
     }
 
@@ -442,19 +485,24 @@ impl InnerChannelRt {
         if let Some(first_tx_state) = node_mut.tx_queue.first_mut() {
             // Just do the actual data exchange between receiver and first sender in queue.
             // It can happen that between we awake the receiver and it invokes exchange_receiver()
-            // there are one more future removed from tx_queue, but it does not matter, the 
+            // there are one more future removed from tx_queue, but it does not matter, the
             // exchange with first sender is ok.
             match (&node_mut.rx_state, &first_tx_state) {
                 (RxState::Registered(ref rx_reg_info), TxState::Registered(ref tx_reg_info)) => {
                     Self::exchange_impl::<T>(rx_reg_info.data, tx_reg_info.data);
                     node_mut.rx_state = RxState::Idle;
                     *first_tx_state = TxState::Exchanged(tx_reg_info.clone());
-                    modtrace!("ChannelRt: mem replaced {} -> {:?}", old_node, node_mut);
+                    modtrace!(
+                        "ChannelRt: {:?} mem::swapped  {} -> {:?}",
+                        channel_id,
+                        old_node,
+                        node_mut
+                    );
                     ExchangeResult::Done
                 }
                 // other state are not legal and should be asserted by Channel Futures:
                 //    * Receiver: it must not call exhange_receiver() if not in Registered state
-                //    * Sender: there should be no way exchange_receiver() is invoked while 
+                //    * Sender: there should be no way exchange_receiver() is invoked while
                 //              sender is in Exhanged state.
                 _ => panic!(
                     "ChannelRt: exchange_receiver unexpected {:?} {:?}",
@@ -505,7 +553,7 @@ impl InnerChannelRt {
     fn drop_channel_if_needed(&mut self, channel_id: ChannelId) {
         if !self.get_node(channel_id).is_channel_alive() {
             self.node = None;
-            modtrace!("ChannelRt: channel {:?} has been closed", channel_id);
+            modtrace!("ChannelRt: {:?} has been dropped", channel_id);
         }
     }
 
