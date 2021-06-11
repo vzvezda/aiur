@@ -342,6 +342,106 @@ impl ChannelNode {
         // this node does not produce any event.
         None
     }
+
+    // Makes the data exchange using std::mem::swap
+    unsafe fn exchange_impl<T>(tx_data: *mut (), rx_data: *mut ()) {
+        let tx_data = std::mem::transmute::<*mut (), *mut Option<T>>(tx_data);
+        let rx_data = std::mem::transmute::<*mut (), *mut Option<T>>(rx_data);
+        std::mem::swap(&mut *tx_data, &mut *rx_data);
+    }
+
+    // This is invoked by Sender future and it should be asserted that there is a
+    // sender future is Registered with either exchanged value or not.
+    unsafe fn exchange_sender<T>(&mut self) -> ExchangeResult {
+        let old_node = format!("{:?}", self);
+
+        if let Some(first_tx_state) = self.tx_queue.first_mut() {
+            match (&self.rx_state, first_tx_state) {
+                (RxState::Gone, TxState::Registered(..)) => {
+                    self.tx_queue.remove(0);
+                    modtrace!(
+                        "ChannelRt: {:?} awoken sender {} -> {:?}",
+                        self.id,
+                        old_node,
+                        self
+                    );
+                    // Receiver is gone and sender still holds the value
+                    ExchangeResult::Disconnected
+                }
+                (_, TxState::Exchanged(..)) => {
+                    self.tx_queue.remove(0);
+                    modtrace!(
+                        "ChannelRt: {:?} awoken sender {} -> {:?}",
+                        self.id,
+                        old_node,
+                        self
+                    );
+                    // This is a typical good exhange scenario that receiver has moved
+                    // the value out of sender storage and replanced it with None.
+                    ExchangeResult::Done
+                }
+                (_, _) => {
+                    panic!(
+                        "ChannelRt: {:?} exchange_sender unexpected state: {}",
+                        self.id, old_node
+                    );
+                }
+            }
+        } else {
+            // do not invoke exchange_sender() when sender does not have a future registered
+            panic!(
+                "ChannelRt: {:?} exhange_sender with no sender: {}",
+                self.id, old_node
+            );
+        }
+    }
+
+    // This is invoked by Receiver future and the precondition that receiver future has
+    // registered.
+    unsafe fn exchange_receiver<T>(&mut self) -> ExchangeResult {
+        let old_node = format!("{:?}", self);
+
+        if let Some(first_tx_state) = self.tx_queue.first_mut() {
+            // Just do the actual data exchange between receiver and first sender in queue.
+            // It can happen that between we awake the receiver and it invokes exchange_receiver()
+            // there are one more future removed from tx_queue, but it does not matter, the
+            // exchange with first sender is ok.
+            match (&self.rx_state, &first_tx_state) {
+                (RxState::Registered(ref rx_reg_info), TxState::Registered(ref tx_reg_info)) => {
+                    Self::exchange_impl::<T>(rx_reg_info.data, tx_reg_info.data);
+                    self.rx_state = RxState::Idle;
+                    *first_tx_state = TxState::Exchanged(tx_reg_info.clone());
+                    modtrace!(
+                        "ChannelRt: {:?} mem::swapped  {} -> {:?}",
+                        self.id,
+                        old_node,
+                        self
+                    );
+                    ExchangeResult::Done
+                }
+                // other state are not legal and should be asserted by Channel Futures:
+                //    * Receiver: it must not call exhange_receiver() if not in Registered state
+                //    * Sender: there should be no way exchange_receiver() is invoked while
+                //              sender is in Exhanged state.
+                _ => panic!(
+                    "ChannelRt: exchange_receiver unexpected {:?} {:?}",
+                    self.rx_state, first_tx_state
+                ),
+            }
+        } else {
+            // There is no sender future
+            if self.senders_alive == 0 {
+                // The receiver might awoken because there is no senders anymore, so
+                // the sender's end of the channel is Disconnected.
+                ExchangeResult::Disconnected
+            } else {
+                // It looks like the sender future was dropped after Receiver future is awoken.
+                // Receiver can be awoken later.
+                ExchangeResult::TryLater
+            }
+        }
+    }
+
 }
 
 // Produce a state like "(C,R}". See the state machine chart in code below for meaning.
@@ -423,104 +523,20 @@ impl InnerChannelRt {
         self.get_node_mut(channel_id).reg_recv_future(reg_info);
     }
 
-    unsafe fn exchange_impl<T>(tx_data: *mut (), rx_data: *mut ()) {
-        let tx_data = std::mem::transmute::<*mut (), *mut Option<T>>(tx_data);
-        let rx_data = std::mem::transmute::<*mut (), *mut Option<T>>(rx_data);
-        std::mem::swap(&mut *tx_data, &mut *rx_data);
-    }
-
     // This is invoked by Sender future and it should be asserted that there is a
     // sender future is Registered with either exchanged value or not.
+    //
+    // Panics if channel_id is not found and if channel id is inconsistent state.
     unsafe fn exchange_sender<T>(&mut self, channel_id: ChannelId) -> ExchangeResult {
-        let node_mut = self.get_node_mut(channel_id);
-        let old_node = format!("{:?}", node_mut);
-
-        if let Some(first_tx_state) = node_mut.tx_queue.first_mut() {
-            match (&node_mut.rx_state, first_tx_state) {
-                (RxState::Gone, TxState::Registered(..)) => {
-                    node_mut.tx_queue.remove(0);
-                    modtrace!(
-                        "ChannelRt: {:?} awoken sender {} -> {:?}",
-                        channel_id,
-                        old_node,
-                        node_mut
-                    );
-                    // Receiver is gone and sender still holds the value
-                    ExchangeResult::Disconnected
-                }
-                (_, TxState::Exchanged(..)) => {
-                    node_mut.tx_queue.remove(0);
-                    modtrace!(
-                        "ChannelRt: {:?} awoken sender {} -> {:?}",
-                        channel_id,
-                        old_node,
-                        node_mut
-                    );
-                    // This is a typical good exhange scenario that receiver has moved
-                    // the value out of sender storage and replanced it with None.
-                    ExchangeResult::Done
-                }
-                (_, _) => {
-                    panic!(
-                        "ChannelRt: {:?} exchange_sender unexpected state: {}",
-                        channel_id, old_node
-                    );
-                }
-            }
-        } else {
-            // do not invoke exchange_sender() when sender does not have a future registered
-            panic!(
-                "ChannelRt: {:?} exhange_sender with no sender: {}",
-                channel_id, old_node
-            );
-        }
+        self.get_node_mut(channel_id).exchange_sender::<T>()
     }
 
     // This is invoked by Receiver future and the precondition that receiver future has
-    // registered.
+    // registered. 
+    //
+    // Panics if channel_id is not found and if channel id is inconsistent state.
     unsafe fn exchange_receiver<T>(&mut self, channel_id: ChannelId) -> ExchangeResult {
-        let node_mut = self.get_node_mut(channel_id);
-        let old_node = format!("{:?}", node_mut);
-
-        if let Some(first_tx_state) = node_mut.tx_queue.first_mut() {
-            // Just do the actual data exchange between receiver and first sender in queue.
-            // It can happen that between we awake the receiver and it invokes exchange_receiver()
-            // there are one more future removed from tx_queue, but it does not matter, the
-            // exchange with first sender is ok.
-            match (&node_mut.rx_state, &first_tx_state) {
-                (RxState::Registered(ref rx_reg_info), TxState::Registered(ref tx_reg_info)) => {
-                    Self::exchange_impl::<T>(rx_reg_info.data, tx_reg_info.data);
-                    node_mut.rx_state = RxState::Idle;
-                    *first_tx_state = TxState::Exchanged(tx_reg_info.clone());
-                    modtrace!(
-                        "ChannelRt: {:?} mem::swapped  {} -> {:?}",
-                        channel_id,
-                        old_node,
-                        node_mut
-                    );
-                    ExchangeResult::Done
-                }
-                // other state are not legal and should be asserted by Channel Futures:
-                //    * Receiver: it must not call exhange_receiver() if not in Registered state
-                //    * Sender: there should be no way exchange_receiver() is invoked while
-                //              sender is in Exhanged state.
-                _ => panic!(
-                    "ChannelRt: exchange_receiver unexpected {:?} {:?}",
-                    node_mut.rx_state, first_tx_state
-                ),
-            }
-        } else {
-            // There is no sender future
-            if node_mut.senders_alive == 0 {
-                // The receiver might awoken because there is no senders anymore, so
-                // the sender's end of the channel is Disconnected.
-                ExchangeResult::Disconnected
-            } else {
-                // It looks like the sender future was dropped after Receiver future is awoken.
-                // Receiver can be awoken later.
-                ExchangeResult::TryLater
-            }
-        }
+        self.get_node_mut(channel_id).exchange_receiver::<T>()
     }
 
     // Awakes the waker and returns its EventId
@@ -529,6 +545,7 @@ impl InnerChannelRt {
     }
 
     fn awake_and_get_event_id(&mut self) -> Option<EventId> {
+        // TODO: iteration for nodes
         if self.node.is_none() {
             return None;
         }
