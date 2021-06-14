@@ -3,6 +3,7 @@
 // |' | '|   (c) 2020 - present, Vladimir Zvezda
 //   / \
 use std::cell::RefCell;
+use std::fmt::Arguments;
 use std::task::Waker;
 
 use crate::reactor::EventId;
@@ -211,58 +212,76 @@ impl ChannelNode {
         node
     }
 
+    // This is a helper function that runs the state mutated closure with a traced
+    // state before and after, like this:
+    // 'aiur::ChannelRt: chan:1 reg receiver future (Idle <- [0]:1) -> (Reg <- [0]:1)'
+    fn traced<MutateStateFn: FnOnce(&mut ChannelNode)>(
+        &mut self,
+        mut_state_fn: MutateStateFn,
+        op: &str,
+    ) {
+        if MODTRACE {
+            // remember the old state
+            let old_self = format!("{:?}", self); // TODO: remove alloc usage here elsewhere
+
+            // mutate the channel node
+            mut_state_fn(self);
+
+            // trace state change as old -> new
+            modtrace!(
+                "ChannelRt: {:?} {} {} -> {:?} ",
+                self.id,
+                op,
+                old_self,
+                self
+            );
+        } else {
+            mut_state_fn(self)
+        }
+    }
+
     fn add_sender_future(&mut self, reg_info: RegInfo) {
-        let old_self = format!("{:?}", self); // fix alloc here and elsewhere
-        self.tx_queue.push(TxState::Registered(reg_info));
-        modtrace!(
-            "ChannelRt: {:?} add sender future {} -> {:?} ",
-            self.id,
-            old_self,
-            self
+        self.traced(
+            |node| {
+                node.tx_queue.push(TxState::Registered(reg_info));
+            },
+            "add sender future",
         );
     }
 
     fn reg_recv_future(&mut self, reg_info: RegInfo) {
-        let old_self = format!("{:?}", self);
-        self.rx_state = RxState::Registered(reg_info);
-        modtrace!(
-            "ChannelRt: {:?} reg receiver future {} -> {:?} ",
-            self.id,
-            old_self,
-            self
+        self.traced(
+            |node| {
+                node.rx_state = RxState::Registered(reg_info);
+            },
+            "reg receiver future",
         );
     }
 
     fn inc_sender(&mut self) {
-        let old_self = format!("{:?}", self);
-        self.senders_alive += 1;
-        modtrace!(
-            "ChannelRt: {:?} inc senders {} -> {:?} ",
-            self.id,
-            old_self,
-            self
+        self.traced(
+            |node| {
+                node.senders_alive += 1;
+            },
+            "inc senders",
         );
     }
 
     fn dec_sender(&mut self) {
-        let old_self = format!("{:?}", self);
-        self.senders_alive -= 1;
-        modtrace!(
-            "ChannelRt: {:?} dec senders {} -> {:?} ",
-            self.id,
-            old_self,
-            self
+        self.traced(
+            |node| {
+                node.senders_alive -= 1;
+            },
+            "dec senders",
         );
     }
 
     fn close_receiver(&mut self) {
-        let old_self = format!("{:?}", self);
-        self.rx_state = RxState::Gone;
-        modtrace!(
-            "ChannelRt: {:?} receiver gone {} -> {:?}",
-            self.id,
-            old_self,
-            self
+        self.traced(
+            |node| {
+                node.rx_state = RxState::Gone;
+            },
+            "receiver has gone",
         );
     }
 
@@ -333,9 +352,8 @@ impl ChannelNode {
             }
         }
 
-        // We do not really have to have such nodes when both receiver is gone and all senders
-        // are gone as well. The runtime should remove such nodes and should not invoke this
-        // method anyway.
+        // All senders are gone and receiver is gone: None would be ok, but it probably
+        // a bug, such Node should be dropped and we don't want to get event for it.
         debug_assert!(self.senders_alive > 0);
 
         // There are alive senders that does not have any active futures right now, means
@@ -343,7 +361,8 @@ impl ChannelNode {
         None
     }
 
-    // Makes the data exchange using std::mem::swap
+    // Makes the data exchange using std::mem::swap, copy data from one future into another
+    // future.
     unsafe fn exchange_impl<T>(tx_data: *mut (), rx_data: *mut ()) {
         let tx_data = std::mem::transmute::<*mut (), *mut Option<T>>(tx_data);
         let rx_data = std::mem::transmute::<*mut (), *mut Option<T>>(rx_data);
@@ -353,28 +372,24 @@ impl ChannelNode {
     // This is invoked by Sender future and it should be asserted that there is a
     // sender future is Registered with either exchanged value or not.
     unsafe fn exchange_sender<T>(&mut self) -> ExchangeResult {
-        let old_node = format!("{:?}", self);
-
         if let Some(first_tx_state) = self.tx_queue.first_mut() {
             match (&self.rx_state, first_tx_state) {
                 (RxState::Gone, TxState::Registered(..)) => {
-                    self.tx_queue.remove(0);
-                    modtrace!(
-                        "ChannelRt: {:?} awoken sender {} -> {:?}",
-                        self.id,
-                        old_node,
-                        self
+                    self.traced(
+                        |node| {
+                            node.tx_queue.remove(0);
+                        },
+                        "awoken sender",
                     );
                     // Receiver is gone and sender still holds the value
                     ExchangeResult::Disconnected
                 }
                 (_, TxState::Exchanged(..)) => {
-                    self.tx_queue.remove(0);
-                    modtrace!(
-                        "ChannelRt: {:?} awoken sender {} -> {:?}",
-                        self.id,
-                        old_node,
-                        self
+                    self.traced(
+                        |node| {
+                            node.tx_queue.remove(0);
+                        },
+                        "awoken sender",
                     );
                     // This is a typical good exhange scenario that receiver has moved
                     // the value out of sender storage and replanced it with None.
@@ -382,16 +397,16 @@ impl ChannelNode {
                 }
                 (_, _) => {
                     panic!(
-                        "ChannelRt: {:?} exchange_sender unexpected state: {}",
-                        self.id, old_node
+                        "ChannelRt: {:?} exchange_sender unexpected state: {:?}",
+                        self.id, self
                     );
                 }
             }
         } else {
             // do not invoke exchange_sender() when sender does not have a future registered
             panic!(
-                "ChannelRt: {:?} exhange_sender with no sender: {}",
-                self.id, old_node
+                "ChannelRt: {:?} exhange_sender with no sender: {:?}",
+                self.id, self
             );
         }
     }
@@ -399,8 +414,6 @@ impl ChannelNode {
     // This is invoked by Receiver future and the precondition that receiver future has
     // registered.
     unsafe fn exchange_receiver<T>(&mut self) -> ExchangeResult {
-        let old_node = format!("{:?}", self);
-
         if let Some(first_tx_state) = self.tx_queue.first_mut() {
             // Just do the actual data exchange between receiver and first sender in queue.
             // It can happen that between we awake the receiver and it invokes exchange_receiver()
@@ -409,13 +422,13 @@ impl ChannelNode {
             match (&self.rx_state, &first_tx_state) {
                 (RxState::Registered(ref rx_reg_info), TxState::Registered(ref tx_reg_info)) => {
                     Self::exchange_impl::<T>(rx_reg_info.data, tx_reg_info.data);
-                    self.rx_state = RxState::Idle;
-                    *first_tx_state = TxState::Exchanged(tx_reg_info.clone());
-                    modtrace!(
-                        "ChannelRt: {:?} mem::swapped  {} -> {:?}",
-                        self.id,
-                        old_node,
-                        self
+                    let cloned_tx_reg_info = tx_reg_info.clone();
+                    self.traced(
+                        move |node| {
+                            node.rx_state = RxState::Idle;
+                            node.tx_queue[0] = TxState::Exchanged(cloned_tx_reg_info);
+                        },
+                        "mem::swapped",
                     );
                     ExchangeResult::Done
                 }
@@ -441,13 +454,15 @@ impl ChannelNode {
             }
         }
     }
-
 }
 
-// Produce a state like "(C,R}". See the state machine chart in code below for meaning.
+// Produce a state like "(Reg <- [Reg+7]:3)"
+//                         ^       ^  ^   ^-senders alive
+//                         |       |  +-----how many sender futures registered (pinned)
+//                         |       +--------state of the first sender (registered, exhanged)
+//                         +----------------state of the receiver
 impl std::fmt::Debug for ChannelNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // (R <- [R+7]:3)
         f.write_str("(")?;
 
         match self.rx_state {
@@ -532,7 +547,7 @@ impl InnerChannelRt {
     }
 
     // This is invoked by Receiver future and the precondition that receiver future has
-    // registered. 
+    // registered.
     //
     // Panics if channel_id is not found and if channel id is inconsistent state.
     unsafe fn exchange_receiver<T>(&mut self, channel_id: ChannelId) -> ExchangeResult {
