@@ -3,7 +3,6 @@
 // |' | '|   (c) 2020 - present, Vladimir Zvezda
 //   / \
 use std::cell::RefCell;
-use std::fmt::Arguments;
 use std::task::Waker;
 
 use crate::reactor::EventId;
