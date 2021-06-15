@@ -137,9 +137,25 @@ enum RxState {
 }
 
 // This is a state for senders
-enum TxState {
-    Registered(RegInfo),
-    Exchanged(RegInfo),
+struct TxState {
+    completion: TxCompletion,
+    waker: Waker,
+    event_id: EventId,
+}
+
+enum TxCompletion {
+    Pinned(*mut ()),
+    Exchanged,
+}
+
+impl TxState {
+    fn new(reg_info: RegInfo) -> Self {
+        Self {
+            completion: TxCompletion::Pinned(reg_info.data),
+            waker: reg_info.waker,
+            event_id: reg_info.event_id,
+        }
+    }
 }
 
 // Only really used for tracing to specifiy if this is a sender or receiver that should be
@@ -183,9 +199,9 @@ impl std::fmt::Debug for RxState {
 
 impl std::fmt::Debug for TxState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TxState::Registered(..) => f.write_str("Registered"),
-            TxState::Exchanged(..) => f.write_str("Exchanged"),
+        match self.completion {
+            TxCompletion::Pinned(..) => f.write_str("Pinned"),
+            TxCompletion::Exchanged => f.write_str("Exchanged"),
         }
     }
 }
@@ -242,7 +258,7 @@ impl ChannelNode {
     fn add_sender_future(&mut self, reg_info: RegInfo) {
         self.traced(
             |node| {
-                node.tx_queue.push(TxState::Registered(reg_info));
+                node.tx_queue.push(TxState::new(reg_info));
             },
             "add sender future",
         );
@@ -275,17 +291,30 @@ impl ChannelNode {
         );
     }
 
-    fn close_receiver(&mut self) {
+    fn cancel_sender_fut(&mut self, event_id: EventId) {
+        self.traced(|node| todo!(), "receiver future canceled");
+    }
+
+    fn cancel_receiver_fut(&mut self) {
         self.traced(
             |node| {
-                node.rx_state = RxState::Gone;
+                node.rx_state = RxState::Idle;
             },
-            "receiver has gone",
+            "receiver future canceled",
         );
     }
 
     fn is_channel_alive(&self) -> bool {
         self.senders_alive > 0 || !matches!(self.rx_state, RxState::Gone)
+    }
+
+    fn close_receiver(&mut self) {
+        self.traced(
+            |node| {
+                node.rx_state = RxState::Gone;
+            },
+            "receiver gone",
+        );
     }
 
     // This is the implementation for the runtime if this ChannelNode ready to produce any
@@ -294,11 +323,11 @@ impl ChannelNode {
         // Verify if there is a sender future that just got its data transfered to a receiver,
         // that should be awoken. It does not matter in what state the Receiver is.
         if let Some(ref first_tx_state) = self.tx_queue.first() {
-            if let TxState::Exchanged(tx_reg_info) = first_tx_state {
+            if let TxCompletion::Exchanged = first_tx_state.completion {
                 return Some(WakeEvent::new(
                     Peer::Sender,
-                    tx_reg_info.waker.clone(),
-                    tx_reg_info.event_id,
+                    first_tx_state.waker.clone(),
+                    first_tx_state.event_id,
                 ));
             }
         }
@@ -335,15 +364,18 @@ impl ChannelNode {
 
         // We now can awake any sender futures one by one if there are any.
         if let Some(first_tx_state) = self.tx_queue.first() {
-            // Btw sender future can be only in Registered state, verified by code above.
-            debug_assert!(matches!(first_tx_state, TxState::Registered(..)));
+            // Btw sender future can be only in Registered state, asserted by the code above.
+            debug_assert!(matches!(
+                first_tx_state.completion,
+                TxCompletion::Pinned(..)
+            ));
 
-            match first_tx_state {
-                TxState::Registered(first_tx_reg_info) => {
+            match first_tx_state.completion {
+                TxCompletion::Pinned(..) => {
                     return Some(WakeEvent::new(
                         Peer::Sender,
-                        first_tx_reg_info.waker.clone(),
-                        first_tx_reg_info.event_id,
+                        first_tx_state.waker.clone(),
+                        first_tx_state.event_id,
                     ));
                 }
 
@@ -372,8 +404,8 @@ impl ChannelNode {
     // sender future is Registered with either exchanged value or not.
     unsafe fn exchange_sender<T>(&mut self) -> ExchangeResult {
         if let Some(first_tx_state) = self.tx_queue.first_mut() {
-            match (&self.rx_state, first_tx_state) {
-                (RxState::Gone, TxState::Registered(..)) => {
+            match (&self.rx_state, &first_tx_state.completion) {
+                (RxState::Gone, TxCompletion::Pinned(..)) => {
                     self.traced(
                         |node| {
                             node.tx_queue.remove(0);
@@ -383,7 +415,7 @@ impl ChannelNode {
                     // Receiver is gone and sender still holds the value
                     ExchangeResult::Disconnected
                 }
-                (_, TxState::Exchanged(..)) => {
+                (_, TxCompletion::Exchanged) => {
                     self.traced(
                         |node| {
                             node.tx_queue.remove(0);
@@ -418,14 +450,13 @@ impl ChannelNode {
             // It can happen that between we awake the receiver and it invokes exchange_receiver()
             // there are one more future removed from tx_queue, but it does not matter, the
             // exchange with first sender is ok.
-            match (&self.rx_state, &first_tx_state) {
-                (RxState::Registered(ref rx_reg_info), TxState::Registered(ref tx_reg_info)) => {
-                    Self::exchange_impl::<T>(rx_reg_info.data, tx_reg_info.data);
-                    let cloned_tx_reg_info = tx_reg_info.clone();
+            match (&self.rx_state, &first_tx_state.completion) {
+                (RxState::Registered(ref rx_reg_info), TxCompletion::Pinned(tx_ptr)) => {
+                    Self::exchange_impl::<T>(rx_reg_info.data, *tx_ptr);
                     self.traced(
                         move |node| {
                             node.rx_state = RxState::Idle;
-                            node.tx_queue[0] = TxState::Exchanged(cloned_tx_reg_info);
+                            node.tx_queue[0].completion = TxCompletion::Exchanged;
                         },
                         "mem::swapped",
                     );
@@ -473,9 +504,9 @@ impl std::fmt::Debug for ChannelNode {
         let tx_len = self.tx_queue.len();
 
         if tx_len > 0 {
-            match self.tx_queue[0] {
-                TxState::Registered(..) => f.write_str("[Reg"),
-                TxState::Exchanged(..) => f.write_str("[Exch"),
+            match self.tx_queue[0].completion {
+                TxCompletion::Pinned(..) => f.write_str("[Pin"),
+                TxCompletion::Exchanged => f.write_str("[Exch"),
             }?;
 
             if tx_len > 1 {
@@ -589,11 +620,11 @@ impl InnerChannelRt {
     }
 
     fn cancel_sender_fut(&mut self, channel_id: ChannelId, event_id: EventId) {
-        todo!()
+        self.get_node_mut(channel_id).cancel_sender_fut(event_id);
     }
 
     fn cancel_receiver_fut(&mut self, channel_id: ChannelId) {
-        todo!()
+        self.get_node_mut(channel_id).cancel_receiver_fut();
     }
 }
 
@@ -608,7 +639,7 @@ mod tests {
     fn create_fake_event(event_ptr: *const ()) -> (Waker, EventId) {
         use std::task::{RawWaker, RawWakerVTable};
 
-        fn to_waker() -> std::task::Waker {
+        fn to_waker(ptr: *const ()) -> std::task::Waker {
             // Cloning the waker returns just the copy of the pointer.
             unsafe fn clone_impl(raw_waker_ptr: *const ()) -> RawWaker {
                 // Just copy the pointer, which is works as a clone
@@ -631,15 +662,12 @@ mod tests {
             const FAKE_WAKER_TABLE: RawWakerVTable =
                 RawWakerVTable::new(clone_impl, wake_impl, wake_by_ref_impl, drop_impl);
 
-            let raw_waker = RawWaker::new(
-                std::ptr::null(), // Can i use it? I don't dereference raw waker ptr anywhere
-                &FAKE_WAKER_TABLE,
-            );
+            let raw_waker = RawWaker::new(ptr, &FAKE_WAKER_TABLE);
 
             unsafe { Waker::from_raw(raw_waker) }
         }
 
-        return (to_waker(), EventId(event_ptr)); // TODO
+        return (to_waker(event_ptr), EventId(event_ptr));
     }
 
     #[test]
@@ -659,14 +687,13 @@ mod tests {
     fn api_test_good_exhange() {
         let mut crt = InnerChannelRt::new();
 
-        // TODO: we have UB here: mut reference sender data and *mut ptr in exhange.
-        // I think we should forget sender_data.
+        let mut sender_ptr: Option<u32> = Some(100);
+        let mut receiver_ptr: Option<u32> = None;
 
-        let mut sender_data: Option<u32> = Some(100);
-        let mut receiver_data: Option<u32> = None;
-
-        let mut sender_ptr = &mut sender_data as *mut Option<u32> as *mut ();
-        let mut receiver_ptr = &mut receiver_data as *mut Option<u32> as *mut ();
+        // Hide the storage variable above to avoid having multiple mutable references
+        // to the same object.
+        let mut sender_ptr = &mut sender_ptr as *mut Option<u32> as *mut ();
+        let mut receiver_ptr = &mut receiver_ptr as *mut Option<u32> as *mut ();
 
         let (sender_waker, sender_event) = create_fake_event(sender_ptr);
         let (receiver_waker, receiver_event) = create_fake_event(receiver_ptr);
@@ -680,9 +707,9 @@ mod tests {
 
         // exchange for the receiver
         let event = crt.awake_and_get_event_id();
-        assert!(event.is_some(), "It is time for event");
+        assert!(event.is_some(), "expected recv event");
         let event = event.unwrap();
-        assert!(event == receiver_event, "Receiver event expected");
+        assert!(event == receiver_event, "expected recv event");
         assert!(
             unsafe { crt.exchange_receiver::<Option<u32>>(channel_id) } == ExchangeResult::Done
         );
@@ -694,9 +721,63 @@ mod tests {
         assert!(event == sender_event, "Sender event expected");
         assert!(unsafe { crt.exchange_sender::<Option<u32>>(channel_id) } == ExchangeResult::Done);
 
-        assert!(receiver_data.expect("Date expected in receiver after exchange") == 100);
+        let receiver_ptr = unsafe { *(receiver_ptr as *const Option<u32>) };
+        assert!(receiver_ptr.expect("Date expected in receiver after exchange") == 100);
 
         crt.dec_sender(channel_id);
         crt.close_receiver(channel_id);
+    }
+
+    #[test]
+    fn api_test_cancel_receiver() {
+        let mut crt = InnerChannelRt::new();
+
+        let mut sender_ptr: Option<u32> = Some(100);
+        let mut receiver_ptr: Option<u32> = None;
+
+        // Hide the storage variable above to avoid having multiple mutable references
+        // to the same object.
+        let mut sender_ptr = &mut sender_ptr as *mut Option<u32> as *mut ();
+        let mut receiver_ptr = &mut receiver_ptr as *mut Option<u32> as *mut ();
+
+        let (sender_waker, sender_event) = create_fake_event(sender_ptr);
+        let (receiver_waker, receiver_event) = create_fake_event(receiver_ptr);
+
+        let channel_id = crt.create();
+
+        crt.inc_sender(channel_id);
+        crt.reg_receiver_fut(channel_id, receiver_waker, receiver_event, receiver_ptr);
+        assert!(crt.awake_and_get_event_id().is_none(), "No event expected");
+        crt.add_sender_fut(channel_id, sender_waker, sender_event, sender_ptr);
+
+        // exchange for the receiver
+        let event = crt.awake_and_get_event_id();
+        assert!(event.is_some(), "expected recv event");
+        let event = event.unwrap();
+        assert!(event == receiver_event, "expected recv event");
+        // instead of exchanging doing cancel
+        crt.cancel_receiver_fut(channel_id);
+        assert!(crt.awake_and_get_event_id().is_none(), "No event expected");
+        // close receiver
+        crt.close_receiver(channel_id);
+
+        let event = crt.awake_and_get_event_id();
+        assert!(
+            event.is_some(),
+            "pinned sender must be awoken after receiver is gone"
+        );
+        let event = event.unwrap();
+        assert!(event == sender_event, "Sender event expected");
+        assert!(
+            unsafe { crt.exchange_sender::<Option<u32>>(channel_id) }
+                == ExchangeResult::Disconnected
+        );
+
+        let sender_ptr = unsafe { *(sender_ptr as *const Option<u32>) };
+        assert!(
+            sender_ptr.expect("Date expected in sender because exchange did not happen") == 100
+        );
+
+        crt.dec_sender(channel_id);
     }
 }
