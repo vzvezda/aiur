@@ -76,7 +76,7 @@ impl<'runtime, ReactorT> Drop for Scope<'runtime, ReactorT> where ReactorT: Reac
             if !self.has_uncompleted_tasks() {
                 break;
             }
-            self.rt.channel_phase();
+            self.rt.jump_phase();
             if !self.has_uncompleted_tasks() {
                 break;
             }

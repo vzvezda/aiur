@@ -3,7 +3,7 @@
 // |' | '|   (c) 2020 - present, Vladimir Zvezda
 //   / \
 use std::future::Future;
-use std::marker::PhantomData;
+use std::marker::{PhantomData, PhantomPinned};
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
@@ -24,7 +24,7 @@ pub fn oneshot<'runtime, T, ReactorT: Reactor>(
     Sender<'runtime, T, ReactorT>,
     Receiver<'runtime, T, ReactorT>,
 ) {
-    let oneshot_id = rt.channels().create();
+    let oneshot_id = rt.oneshots().create();
     (Sender::new(rt, oneshot_id), Receiver::new(rt, oneshot_id))
 }
 
@@ -46,31 +46,31 @@ impl<'runtime, ReactorT: Reactor> RuntimeOneshot<'runtime, ReactorT> {
 
     fn reg_sender(&self, waker: &Waker, sender_event_id: EventId, pointer: *mut ()) {
         self.rt
-            .channels()
+            .oneshots()
             .reg_sender(self.oneshot_id, waker.clone(), sender_event_id, pointer);
     }
 
     fn reg_receiver(&self, waker: &Waker, receiver_event_id: EventId, pointer: *mut ()) {
         self.rt
-            .channels()
+            .oneshots()
             .reg_receiver(self.oneshot_id, waker.clone(), receiver_event_id, pointer);
     }
 
     unsafe fn exchange<T>(&self) -> bool {
-        self.rt.channels().exchange::<T>(self.oneshot_id)
+        self.rt.oneshots().exchange::<T>(self.oneshot_id)
     }
 
     fn cancel_sender(&self) {
-        self.rt.channels().cancel_sender(self.oneshot_id);
+        self.rt.oneshots().cancel_sender(self.oneshot_id);
     }
 
     fn cancel_receiver(&self) {
-        self.rt.channels().cancel_receiver(self.oneshot_id);
+        self.rt.oneshots().cancel_receiver(self.oneshot_id);
     }
 }
 
 // -----------------------------------------------------------------------------------------------
-// Sender's end of the channel
+// Sender's end of the oneshot
 pub struct Sender<'runtime, T, ReactorT: Reactor> {
     inner: SenderInner<'runtime, T, ReactorT>, // use inner to hide enum internals
 }
@@ -125,9 +125,10 @@ struct SenderFuture<'runtime, T, ReactorT: Reactor> {
     runtime_channel: RuntimeOneshot<'runtime, ReactorT>,
     data: Option<T>,
     state: PeerFutureState,
+    _pin: PhantomPinned, // we need the &data to be stable while pinned
 }
 
-// This just makes the get_event_id() method in TimerFuture
+// This just adds the get_event_id() method to SenderFuture
 impl<'runtime, T, ReactorT: Reactor> GetEventId for SenderFuture<'runtime, T, ReactorT> {}
 
 impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
@@ -136,6 +137,7 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
             runtime_channel: RuntimeOneshot::new(rc.rt, rc.oneshot_id),
             data: Some(value),
             state: PeerFutureState::Created,
+            _pin: PhantomPinned,
         }
     }
 
@@ -208,6 +210,7 @@ pub struct Receiver<'runtime, T, ReactorT: Reactor> {
     runtime_channel: RuntimeOneshot<'runtime, ReactorT>,
     state: PeerFutureState,
     data: Option<T>,
+    _pin: PhantomPinned, // we need the &data to be stable while pinned
 }
 
 impl<'runtime, T, ReactorT: Reactor> GetEventId for Receiver<'runtime, T, ReactorT> {}
@@ -218,6 +221,7 @@ impl<'runtime, T, ReactorT: Reactor> Receiver<'runtime, T, ReactorT> {
             runtime_channel: RuntimeOneshot::new(rt, oneshot_id),
             state: PeerFutureState::Created,
             data: None,
+            _pin: PhantomPinned,
         }
     }
 

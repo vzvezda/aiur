@@ -3,9 +3,10 @@
 // |' | '|   (c) 2020 - present, Vladimir Zvezda
 //   / \
 use std::cell::{Cell, RefCell};
-use std::future::Future;
 use std::collections::VecDeque;
+use std::future::Future;
 
+use crate::channel_rt::ChannelRt;
 use crate::oneshot_rt::OneshotRt;
 use crate::reactor::{EventId, Reactor};
 use crate::task::{allocate_void_task, construct_task, Completion, ITask};
@@ -86,7 +87,6 @@ impl TaskMaster {
     }
 }
 
-
 //
 //
 pub struct Runtime<ReactorT> {
@@ -94,6 +94,7 @@ pub struct Runtime<ReactorT> {
     awoken: Awoken,
     task_master: TaskMaster,
     oneshot_rt: OneshotRt,
+    channel_rt: ChannelRt,
 }
 
 impl<ReactorT> Runtime<ReactorT>
@@ -106,6 +107,7 @@ where
             awoken: Awoken::new(),
             task_master: TaskMaster::new(),
             oneshot_rt: OneshotRt::new(),
+            channel_rt: ChannelRt::new(),
         }
     }
 
@@ -130,20 +132,23 @@ where
         while self.task_master.has_tasks() {
             // TODO: repeat spawn/channel until done before proceed to poll
             self.spawn_phase();
-            self.channel_phase();
+            self.jump_phase();
             self.poll_phase();
         }
 
         unsafe { result.assume_init() }
     }
 
-    pub(crate) fn channels(&self) -> &OneshotRt {
+    pub(crate) fn oneshots(&self) -> &OneshotRt {
         &self.oneshot_rt
     }
 
+    pub(crate) fn channels(&self) -> &ChannelRt {
+        &self.channel_rt
+    }
+
     // Adds a new future as a task in a new list that is to be spawn on a spawn_phase
-    pub(crate) fn spawn<'runtime, 'scope, F>(&'runtime self, f: F) 
-        -> *mut (dyn ITask + 'static)
+    pub(crate) fn spawn<'runtime, 'scope, F>(&'runtime self, f: F) -> *mut (dyn ITask + 'static)
     where
         F: Future<Output = ()> + 'runtime,
     {
@@ -159,17 +164,47 @@ where
         task
     }
 
-    pub(crate) fn channel_phase(&self) {
-        // do the channel exchange until there is no more channels 
+    pub(crate) fn jump_phase(&self) {
+        self.oneshot_phase();
+        self.channel_phase();
+    }
+
+    fn channel_phase(&self) {
+        // do the channel exchange until there is no more oneshots
         loop {
             // TODO: this is a copy/paste of poll_phase code, we need to unify this
 
-            if let Some(event_id) = self.channels().get_event_id() {
+            if let Some(event_id) = self.channels().awake_and_get_event_id() {
                 let awoken_task = self.awoken.itask_ptr.get().unwrap();
                 self.awoken.event_id.set(event_id);
 
                 if unsafe { (*awoken_task).poll() } == Completion::Done {
-                    unsafe { (*awoken_task).on_completed(); }
+                    unsafe {
+                        (*awoken_task).on_completed();
+                    }
+                    self.task_master.dec_tasks();
+                    // TODO: deallocate if &addr != &task
+                } else {
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn oneshot_phase(&self) {
+        // do the channel exchange until there is no more oneshots
+        loop {
+            // TODO: this is a copy/paste of poll_phase code, we need to unify this
+
+            if let Some(event_id) = self.oneshots().awake_and_get_event_id() {
+                let awoken_task = self.awoken.itask_ptr.get().unwrap();
+                self.awoken.event_id.set(event_id);
+
+                if unsafe { (*awoken_task).poll() } == Completion::Done {
+                    unsafe {
+                        (*awoken_task).on_completed();
+                    }
                     self.task_master.dec_tasks();
                     // TODO: deallocate if &addr != &task
                 } else {
@@ -183,7 +218,6 @@ where
     //
     //
     pub(crate) fn spawn_phase(&self) {
-
         loop {
             let itask_ptr = self.task_master.pop_task();
             if itask_ptr.is_none() {
@@ -203,12 +237,14 @@ where
             if completed == Completion::Working {
                 self.task_master.inc_tasks();
             } else {
-                unsafe { (*itask_ptr).on_completed(); }
+                unsafe {
+                    (*itask_ptr).on_completed();
+                }
             }
         }
     }
 
-    // Waits for a signal from reactor and then 
+    // Waits for a signal from reactor and then
     pub(crate) fn poll_phase(&self) -> Option<*mut dyn ITask> {
         if !self.task_master.has_scheduled_tasks() {
             // it happens: we have tasks in spawn list, but nothing to wait in reactor
@@ -220,7 +256,9 @@ where
         let awoken_task = self.wait();
 
         if unsafe { (*awoken_task).poll() } == Completion::Done {
-            unsafe { (*awoken_task).on_completed(); }
+            unsafe {
+                (*awoken_task).on_completed();
+            }
             self.task_master.dec_tasks();
             // TODO: deallocate if &addr != &task
             Some(awoken_task)
