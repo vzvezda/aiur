@@ -387,26 +387,3 @@ impl<'runtime, T, ReactorT: Reactor> Future for ChNextFuture<'runtime, T, Reacto
     }
 }
 
-/* Can be removed. This is how I verified that futures are unpin
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct ZeroReactor {}
-    impl Reactor for ZeroReactor {
-        fn wait(&self) -> EventId {
-            EventId::null()
-        }
-    }
-
-    fn is_unpin<T: Unpin>(_: T) {}
-
-    #[test]
-    fn channel_future_pinning() {
-        let rt = Runtime::new(ZeroReactor {});
-        let channel = rt.channels().create();
-        let rc = RuntimeChannel::new(&rt, channel);
-        is_unpin(ChNextFuture::<u32, ZeroReactor>::new(&rc));
-    }
-}
-*/

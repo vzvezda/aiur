@@ -27,7 +27,7 @@ impl std::fmt::Debug for ChannelId {
 }
 
 // The result of exchange<T> for send/receive future
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 pub(crate) enum ExchangeResult {
     Done,
     Disconnected,
@@ -637,38 +637,39 @@ mod tests {
     // This creates (Waker, EventId) that can be used for testing Channel Runtime API. The waker
     // is kind of fake it will not awake anything, but we need one for channel peers registration.
     fn create_fake_event(event_ptr: *const ()) -> (Waker, EventId) {
+        return (create_fake_waker(event_ptr), EventId(event_ptr));
+    }
+
+    fn create_fake_waker(ptr: *const ()) -> std::task::Waker {
         use std::task::{RawWaker, RawWakerVTable};
-
-        fn to_waker(ptr: *const ()) -> std::task::Waker {
-            // Cloning the waker returns just the copy of the pointer.
-            unsafe fn clone_impl(raw_waker_ptr: *const ()) -> RawWaker {
-                // Just copy the pointer, which is works as a clone
-                RawWaker::new(raw_waker_ptr, &FAKE_WAKER_TABLE)
-            }
-
-            // Wake the future
-            unsafe fn wake_impl(raw_waker_ptr: *const ()) {
-                wake_by_ref_impl(raw_waker_ptr);
-            }
-
-            // Wake the future by ref
-            unsafe fn wake_by_ref_impl(_raw_waker_ptr: *const ()) {
-                // nothing here, this waker does not awake anything
-            }
-
-            // Drop the waker
-            unsafe fn drop_impl(_raw_waker_ptr: *const ()) {}
-
-            const FAKE_WAKER_TABLE: RawWakerVTable =
-                RawWakerVTable::new(clone_impl, wake_impl, wake_by_ref_impl, drop_impl);
-
-            let raw_waker = RawWaker::new(ptr, &FAKE_WAKER_TABLE);
-
-            unsafe { Waker::from_raw(raw_waker) }
+        // Cloning the waker returns just the copy of the pointer.
+        unsafe fn clone_impl(raw_waker_ptr: *const ()) -> RawWaker {
+            // Just copy the pointer, which is works as a clone
+            RawWaker::new(raw_waker_ptr, &FAKE_WAKER_TABLE)
         }
 
-        return (to_waker(event_ptr), EventId(event_ptr));
+        // Wake the future
+        unsafe fn wake_impl(raw_waker_ptr: *const ()) {
+            wake_by_ref_impl(raw_waker_ptr);
+        }
+
+        // Wake the future by ref
+        unsafe fn wake_by_ref_impl(_raw_waker_ptr: *const ()) {
+            // nothing here, this waker does not awake anything
+        }
+
+        // Drop the waker
+        unsafe fn drop_impl(_raw_waker_ptr: *const ()) {}
+
+        const FAKE_WAKER_TABLE: RawWakerVTable =
+            RawWakerVTable::new(clone_impl, wake_impl, wake_by_ref_impl, drop_impl);
+
+        let raw_waker = RawWaker::new(ptr, &FAKE_WAKER_TABLE);
+
+        unsafe { Waker::from_raw(raw_waker) }
     }
+
+
 
     #[test]
     fn api_test_drop() {
@@ -683,6 +684,52 @@ mod tests {
         assert!(crt.awake_and_get_event_id().is_none());
     }
 
+    // This is a test sender
+    struct SenderEmu<'rt> {
+        crt: &'rt ChannelRt,
+        channel_id: ChannelId,
+        event_id: EventId,
+        waker: Waker,
+        ptr: *mut (),
+    }
+
+    impl<'rt> SenderEmu<'rt> {
+        fn new(crt: &'rt ChannelRt, channel_id: ChannelId, storage: &mut Option<u32>) -> Self {
+            let ptr = storage as *mut Option<u32> as *mut ();
+            crt.inc_sender(channel_id);
+            Self {
+                crt,
+                channel_id,
+                event_id: EventId(ptr),
+                waker: create_fake_waker(ptr),
+                ptr,
+            }
+        }
+
+        fn register(&mut self) {
+            self.crt.add_sender_fut(self.channel_id, 
+                self.waker.clone(), self.event_id, self.ptr);
+        }
+
+        fn assert_event(&self, event_id: Option<EventId>) {
+            assert_eq!(self.event_id, event_id.expect("Event is expected"));
+        }
+
+        fn cancel(&mut self) {
+            self.crt.cancel_sender_fut(self.channel_id, self.event_id);
+        }
+
+        unsafe fn exchange(&mut self, expected: ExchangeResult) {
+            assert_eq!(self.crt.exchange_sender::<Option<u32>>(self.channel_id), expected);
+        }
+    }
+
+    impl<'rt> Drop for SenderEmu<'rt> {
+        fn drop(&mut self) {
+            self.crt.dec_sender(self.channel_id);
+        }
+    }
+
     #[test]
     fn api_test_good_exhange() {
         let mut crt = InnerChannelRt::new();
@@ -694,6 +741,7 @@ mod tests {
         // to the same object.
         let mut sender_ptr = &mut sender_ptr as *mut Option<u32> as *mut ();
         let mut receiver_ptr = &mut receiver_ptr as *mut Option<u32> as *mut ();
+
 
         let (sender_waker, sender_event) = create_fake_event(sender_ptr);
         let (receiver_waker, receiver_event) = create_fake_event(receiver_ptr);
@@ -780,4 +828,64 @@ mod tests {
 
         crt.dec_sender(channel_id);
     }
+
+    #[test]
+    fn api_test_send_two_values() {
+        let crt = ChannelRt::new();
+
+        let mut sender1_ptr: Option<u32> = Some(100);
+        let mut sender2_ptr: Option<u32> = Some(50);
+        let mut receiver_ptr: Option<u32> = None;
+
+        let channel_id = crt.create();
+
+        // Hide the storage variable above to avoid having multiple mutable references
+        // to the same object.
+        //let mut sender1_ptr = &mut sender1_ptr as *mut Option<u32> as *mut ();
+        let mut sender1_ptr = SenderEmu::new(&crt, channel_id, &mut sender1_ptr);
+        let mut sender2_ptr = SenderEmu::new(&crt, channel_id, &mut sender2_ptr);
+        let mut receiver_ptr = &mut receiver_ptr as *mut Option<u32> as *mut ();
+
+        let (receiver_waker, receiver_event) = create_fake_event(receiver_ptr);
+
+        crt.reg_receiver_fut(channel_id, receiver_waker.clone(), receiver_event, receiver_ptr);
+        assert!(crt.awake_and_get_event_id().is_none(), "No event expected");
+        sender1_ptr.register();
+        sender2_ptr.register();
+
+        // exchange for the receiver
+        let event = crt.awake_and_get_event_id();
+        assert!(event.is_some(), "expected recv event");
+        let event = event.unwrap();
+        assert!(event == receiver_event, "expected recv event");
+        assert!(
+            unsafe { crt.exchange_receiver::<Option<u32>>(channel_id) } == ExchangeResult::Done
+        );
+
+        // exchange the sender
+        sender1_ptr.assert_event(crt.awake_and_get_event_id());
+        unsafe { sender1_ptr.exchange(ExchangeResult::Done) };
+
+        assert!(unsafe { *(receiver_ptr as *const Option<u32>) }.
+            expect("Date expected in receiver after exchange") == 100);
+
+        crt.reg_receiver_fut(channel_id, receiver_waker, receiver_event, receiver_ptr);
+        let event = crt.awake_and_get_event_id();
+        assert!(event.is_some(), "expected recv event");
+        let event = event.unwrap();
+        assert!(event == receiver_event, "expected recv event");
+        assert!(
+            unsafe { crt.exchange_receiver::<Option<u32>>(channel_id) } == ExchangeResult::Done
+        );
+
+        // exchange the sender
+        sender2_ptr.assert_event(crt.awake_and_get_event_id());
+        unsafe { sender2_ptr.exchange(ExchangeResult::Done) };
+
+        let receiver_ptr = unsafe { *(receiver_ptr as *const Option<u32>) };
+        assert!(receiver_ptr.expect("Date expected in receiver after exchange") == 50);
+
+        crt.close_receiver(channel_id);
+    }
+
 }
