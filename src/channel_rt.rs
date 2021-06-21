@@ -705,7 +705,7 @@ mod tests {
             }
         }
 
-        fn register(&mut self) {
+        fn register(&self) {
             self.crt.reg_receiver_fut(self.channel_id, 
                 self.waker.clone(), self.event_id, self.ptr);
         }
@@ -714,7 +714,7 @@ mod tests {
             assert_eq!(self.event_id, event_id.expect("Event is expected"));
         }
 
-        fn cancel(&mut self) {
+        fn cancel(&self) {
             self.crt.cancel_receiver_fut(self.channel_id);
         }
 
@@ -724,7 +724,7 @@ mod tests {
                 *rhs);
         }
 
-        unsafe fn exchange(&mut self, expected: ExchangeResult) {
+        unsafe fn exchange(&self, expected: ExchangeResult) {
             assert_eq!(self.crt.exchange_receiver::<Option<u32>>(self.channel_id), expected);
         }
     }
@@ -758,7 +758,7 @@ mod tests {
             }
         }
 
-        fn register(&mut self) {
+        fn register(&self) {
             self.crt.add_sender_fut(self.channel_id, 
                 self.waker.clone(), self.event_id, self.ptr);
         }
@@ -767,11 +767,11 @@ mod tests {
             assert_eq!(self.event_id, event_id.expect("Event is expected"));
         }
 
-        fn cancel(&mut self) {
+        fn cancel(&self) {
             self.crt.cancel_sender_fut(self.channel_id, self.event_id);
         }
 
-        unsafe fn exchange(&mut self, expected: ExchangeResult) {
+        unsafe fn exchange(&self, expected: ExchangeResult) {
             assert_eq!(self.crt.exchange_sender::<Option<u32>>(self.channel_id), expected);
         }
     }
@@ -893,7 +893,6 @@ mod tests {
 
         // Hide the storage variable above to avoid having multiple mutable references
         // to the same object.
-        //let mut sender1_ptr = &mut sender1_ptr as *mut Option<u32> as *mut ();
         let mut sender1  = SenderEmu::new(&crt, channel_id, &mut sender1);
         let mut sender2  = SenderEmu::new(&crt, channel_id, &mut sender2);
         let mut recv = RecvEmu::new(&crt, channel_id, &mut recv);
@@ -924,5 +923,4 @@ mod tests {
         unsafe { sender2.exchange(ExchangeResult::Done) };
         unsafe { recv.assert_value(&Some(50)) };
     }
-
 }
