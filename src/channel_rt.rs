@@ -685,6 +685,58 @@ mod tests {
     }
 
     // This is a test sender
+    struct RecvEmu<'rt> {
+        crt: &'rt ChannelRt,
+        channel_id: ChannelId,
+        event_id: EventId,
+        waker: Waker,
+        ptr: *mut (),
+    }
+
+    impl<'rt> RecvEmu<'rt> {
+        fn new(crt: &'rt ChannelRt, channel_id: ChannelId, storage: &mut Option<u32>) -> Self {
+            let ptr = storage as *mut Option<u32> as *mut ();
+            Self {
+                crt,
+                channel_id,
+                event_id: EventId(ptr),
+                waker: create_fake_waker(ptr),
+                ptr,
+            }
+        }
+
+        fn register(&mut self) {
+            self.crt.reg_receiver_fut(self.channel_id, 
+                self.waker.clone(), self.event_id, self.ptr);
+        }
+
+        fn assert_event(&self, event_id: Option<EventId>) {
+            assert_eq!(self.event_id, event_id.expect("Event is expected"));
+        }
+
+        fn cancel(&mut self) {
+            self.crt.cancel_receiver_fut(self.channel_id);
+        }
+
+        unsafe fn assert_value(&self, rhs: &Option<u32>) {
+            assert_eq!(
+                *(self.ptr as *const Option<u32>),
+                *rhs);
+        }
+
+        unsafe fn exchange(&mut self, expected: ExchangeResult) {
+            assert_eq!(self.crt.exchange_receiver::<Option<u32>>(self.channel_id), expected);
+        }
+    }
+
+    impl<'rt> Drop for RecvEmu<'rt> {
+        fn drop(&mut self) {
+            self.crt.close_receiver(self.channel_id);
+        }
+    }
+
+
+    // This is a test sender
     struct SenderEmu<'rt> {
         crt: &'rt ChannelRt,
         channel_id: ChannelId,
@@ -833,59 +885,44 @@ mod tests {
     fn api_test_send_two_values() {
         let crt = ChannelRt::new();
 
-        let mut sender1_ptr: Option<u32> = Some(100);
-        let mut sender2_ptr: Option<u32> = Some(50);
-        let mut receiver_ptr: Option<u32> = None;
+        let mut sender1: Option<u32> = Some(100);
+        let mut sender2: Option<u32> = Some(50);
+        let mut recv: Option<u32> = None;
 
         let channel_id = crt.create();
 
         // Hide the storage variable above to avoid having multiple mutable references
         // to the same object.
         //let mut sender1_ptr = &mut sender1_ptr as *mut Option<u32> as *mut ();
-        let mut sender1_ptr = SenderEmu::new(&crt, channel_id, &mut sender1_ptr);
-        let mut sender2_ptr = SenderEmu::new(&crt, channel_id, &mut sender2_ptr);
-        let mut receiver_ptr = &mut receiver_ptr as *mut Option<u32> as *mut ();
+        let mut sender1  = SenderEmu::new(&crt, channel_id, &mut sender1);
+        let mut sender2  = SenderEmu::new(&crt, channel_id, &mut sender2);
+        let mut recv = RecvEmu::new(&crt, channel_id, &mut recv);
 
-        let (receiver_waker, receiver_event) = create_fake_event(receiver_ptr);
+        recv.register();
+        assert!(crt.awake_and_get_event_id().is_none());
 
-        crt.reg_receiver_fut(channel_id, receiver_waker.clone(), receiver_event, receiver_ptr);
-        assert!(crt.awake_and_get_event_id().is_none(), "No event expected");
-        sender1_ptr.register();
-        sender2_ptr.register();
+        sender1.register();
+        sender2.register();
 
         // exchange for the receiver
-        let event = crt.awake_and_get_event_id();
-        assert!(event.is_some(), "expected recv event");
-        let event = event.unwrap();
-        assert!(event == receiver_event, "expected recv event");
-        assert!(
-            unsafe { crt.exchange_receiver::<Option<u32>>(channel_id) } == ExchangeResult::Done
-        );
+        recv.assert_event(crt.awake_and_get_event_id());
+        unsafe { recv.exchange(ExchangeResult::Done) };
 
         // exchange the sender
-        sender1_ptr.assert_event(crt.awake_and_get_event_id());
-        unsafe { sender1_ptr.exchange(ExchangeResult::Done) };
+        sender1.assert_event(crt.awake_and_get_event_id());
+        unsafe { sender1.exchange(ExchangeResult::Done) };
+        unsafe { recv.assert_value(&Some(100)) };
 
-        assert!(unsafe { *(receiver_ptr as *const Option<u32>) }.
-            expect("Date expected in receiver after exchange") == 100);
+        // prepare sender once again
+        recv.register();
 
-        crt.reg_receiver_fut(channel_id, receiver_waker, receiver_event, receiver_ptr);
-        let event = crt.awake_and_get_event_id();
-        assert!(event.is_some(), "expected recv event");
-        let event = event.unwrap();
-        assert!(event == receiver_event, "expected recv event");
-        assert!(
-            unsafe { crt.exchange_receiver::<Option<u32>>(channel_id) } == ExchangeResult::Done
-        );
+        recv.assert_event(crt.awake_and_get_event_id());
+        unsafe { recv.exchange(ExchangeResult::Done) };
 
         // exchange the sender
-        sender2_ptr.assert_event(crt.awake_and_get_event_id());
-        unsafe { sender2_ptr.exchange(ExchangeResult::Done) };
-
-        let receiver_ptr = unsafe { *(receiver_ptr as *const Option<u32>) };
-        assert!(receiver_ptr.expect("Date expected in receiver after exchange") == 50);
-
-        crt.close_receiver(channel_id);
+        sender2.assert_event(crt.awake_and_get_event_id());
+        unsafe { sender2.exchange(ExchangeResult::Done) };
+        unsafe { recv.assert_value(&Some(50)) };
     }
 
 }
