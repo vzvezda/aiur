@@ -511,8 +511,7 @@ impl std::fmt::Debug for ChannelNode {
 
             if tx_len > 1 {
                 f.write_fmt(format_args!(", Pin:{}]:", tx_len - 1))?;
-            }
-            else {
+            } else {
                 f.write_str("]:")?;
             }
         } else {
@@ -723,7 +722,7 @@ mod tests {
         }
 
         unsafe fn clear_storage(&mut self) {
-            // Clear the receiver's value to be able to repeat 
+            // Clear the receiver's value to be able to repeat
             (*(self.ptr as *mut Option<u32>)) = None;
         }
 
@@ -818,100 +817,65 @@ mod tests {
 
     #[test]
     fn api_test_good_exhange() {
-        let mut crt = InnerChannelRt::new();
+        let mut crt = ChannelRt::new();
 
-        let mut sender_ptr: Option<u32> = Some(100);
-        let mut receiver_ptr: Option<u32> = None;
-
-        // Hide the storage variable above to avoid having multiple mutable references
-        // to the same object.
-        let mut sender_ptr = &mut sender_ptr as *mut Option<u32> as *mut ();
-        let mut receiver_ptr = &mut receiver_ptr as *mut Option<u32> as *mut ();
-
-        let (sender_waker, sender_event) = create_fake_event(sender_ptr);
-        let (receiver_waker, receiver_event) = create_fake_event(receiver_ptr);
+        let mut sender: Option<u32> = Some(100);
+        let mut recv: Option<u32> = None;
 
         let channel_id = crt.create();
 
-        crt.inc_sender(channel_id);
-        crt.reg_receiver_fut(channel_id, receiver_waker, receiver_event, receiver_ptr);
-        assert!(crt.awake_and_get_event_id().is_none(), "No event expected");
-        crt.add_sender_fut(channel_id, sender_waker, sender_event, sender_ptr);
+        // Hide the storage variable above to avoid having multiple mutable references
+        // to the same object.
+        let sender = SenderEmu::new(&crt, channel_id, &mut sender);
+        let mut recv = RecvEmu::new(&crt, channel_id, &mut recv);
 
-        // exchange for the receiver
-        let event = crt.awake_and_get_event_id();
-        assert!(event.is_some(), "expected recv event");
-        let event = event.unwrap();
-        assert!(event == receiver_event, "expected recv event");
-        assert!(
-            unsafe { crt.exchange_receiver::<Option<u32>>(channel_id) } == ExchangeResult::Done
-        );
+        recv.register();
+        assert!(crt.awake_and_get_event_id().is_none());
+        sender.register();
 
-        // exchange the sender
-        let event = crt.awake_and_get_event_id();
-        assert!(event.is_some(), "It is time for event");
-        let event = event.unwrap();
-        assert!(event == sender_event, "Sender event expected");
-        assert!(unsafe { crt.exchange_sender::<Option<u32>>(channel_id) } == ExchangeResult::Done);
+        unsafe {
+            // receiver awoken and have got the right value after exchange
+            recv.assert_completion(
+                crt.awake_and_get_event_id(),
+                ExchangeResult::Done,
+                &Some(100),
+            );
+            recv.clear_storage();
 
-        let receiver_ptr = unsafe { *(receiver_ptr as *const Option<u32>) };
-        assert!(receiver_ptr.expect("Date expected in receiver after exchange") == 100);
-
-        crt.dec_sender(channel_id);
-        crt.close_receiver(channel_id);
+            // verifies that sender is awoken and had value taken out after exchange
+            sender.assert_completion(crt.awake_and_get_event_id(), ExchangeResult::Done, &None);
+        }
     }
 
     #[test]
     fn api_test_cancel_receiver() {
-        let mut crt = InnerChannelRt::new();
+        let mut crt = ChannelRt::new();
 
-        let mut sender_ptr: Option<u32> = Some(100);
-        let mut receiver_ptr: Option<u32> = None;
-
-        // Hide the storage variable above to avoid having multiple mutable references
-        // to the same object.
-        let mut sender_ptr = &mut sender_ptr as *mut Option<u32> as *mut ();
-        let mut receiver_ptr = &mut receiver_ptr as *mut Option<u32> as *mut ();
-
-        let (sender_waker, sender_event) = create_fake_event(sender_ptr);
-        let (receiver_waker, receiver_event) = create_fake_event(receiver_ptr);
+        let mut sender: Option<u32> = Some(100);
+        let mut recv: Option<u32> = None;
 
         let channel_id = crt.create();
 
-        crt.inc_sender(channel_id);
-        crt.reg_receiver_fut(channel_id, receiver_waker, receiver_event, receiver_ptr);
-        assert!(crt.awake_and_get_event_id().is_none(), "No event expected");
-        crt.add_sender_fut(channel_id, sender_waker, sender_event, sender_ptr);
+        // Hide the storage variable above to avoid having multiple mutable references
+        // to the same object.
+        let sender = SenderEmu::new(&crt, channel_id, &mut sender);
+        let mut recv = RecvEmu::new(&crt, channel_id, &mut recv);
 
-        // exchange for the receiver
-        let event = crt.awake_and_get_event_id();
-        assert!(event.is_some(), "expected recv event");
-        let event = event.unwrap();
-        assert!(event == receiver_event, "expected recv event");
-        // instead of exchanging doing cancel
-        crt.cancel_receiver_fut(channel_id);
-        assert!(crt.awake_and_get_event_id().is_none(), "No event expected");
-        // close receiver
-        crt.close_receiver(channel_id);
+        sender.register();
+        assert!(crt.awake_and_get_event_id().is_none());
+        recv.register();
 
-        let event = crt.awake_and_get_event_id();
-        assert!(
-            event.is_some(),
-            "pinned sender must be awoken after receiver is gone"
-        );
-        let event = event.unwrap();
-        assert!(event == sender_event, "Sender event expected");
-        assert!(
-            unsafe { crt.exchange_sender::<Option<u32>>(channel_id) }
-                == ExchangeResult::Disconnected
-        );
 
-        let sender_ptr = unsafe { *(sender_ptr as *const Option<u32>) };
-        assert!(
-            sender_ptr.expect("Date expected in sender because exchange did not happen") == 100
-        );
+        unsafe {
+            // verify if receiver is awoken
+            recv.assert_event(crt.awake_and_get_event_id());
+            drop(recv); // instead of exchange just close the receiver
 
-        crt.dec_sender(channel_id);
+            // Sender now awoken with exchange result to be disconnected and value
+            // still on senders side.
+            sender.assert_completion(crt.awake_and_get_event_id(), 
+                ExchangeResult::Disconnected, &Some(100));
+        }
     }
 
     #[test]
@@ -947,9 +911,7 @@ mod tests {
             recv.clear_storage();
 
             // verifies that sender is awoken and had value taken out after exchange
-            sender1.assert_completion(crt.awake_and_get_event_id(),
-                ExchangeResult::Done,
-                &None);
+            sender1.assert_completion(crt.awake_and_get_event_id(), ExchangeResult::Done, &None);
 
             // prepare sender once again
             recv.register();
@@ -962,9 +924,7 @@ mod tests {
             );
 
             // verifies that sender is awoken and had value taken out after exchange
-            sender2.assert_completion(crt.awake_and_get_event_id(),
-                ExchangeResult::Done,
-                &None);
+            sender2.assert_completion(crt.awake_and_get_event_id(), ExchangeResult::Done, &None);
         }
     }
 }
