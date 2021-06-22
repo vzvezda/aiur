@@ -237,7 +237,7 @@ impl ChannelNode {
     ) {
         if MODTRACE {
             // remember the old state
-            let old_self = format!("{:?}", self); // TODO: remove alloc usage here elsewhere
+            let old_self = format!("{:?}", self); // TODO: remove alloc usage here
 
             // mutate the channel node
             mut_state_fn(self);
@@ -292,7 +292,17 @@ impl ChannelNode {
     }
 
     fn cancel_sender_fut(&mut self, event_id: EventId) {
-        self.traced(|node| todo!(), "receiver future canceled");
+        self.traced(
+            |node| {
+                node.tx_queue.remove(
+                    node.tx_queue
+                        .iter()
+                        .position(|x| x.event_id == event_id)
+                        .unwrap(),
+                );
+            },
+            "receiver future canceled",
+        );
     }
 
     fn cancel_receiver_fut(&mut self) {
@@ -721,8 +731,8 @@ mod tests {
             assert_eq!(*(self.ptr as *const Option<u32>), *rhs);
         }
 
+        // Clear the receiver's value to be able to repeat
         unsafe fn clear_storage(&mut self) {
-            // Clear the receiver's value to be able to repeat
             (*(self.ptr as *mut Option<u32>)) = None;
         }
 
@@ -865,7 +875,6 @@ mod tests {
         assert!(crt.awake_and_get_event_id().is_none());
         recv.register();
 
-
         unsafe {
             // verify if receiver is awoken
             recv.assert_event(crt.awake_and_get_event_id());
@@ -873,8 +882,11 @@ mod tests {
 
             // Sender now awoken with exchange result to be disconnected and value
             // still on senders side.
-            sender.assert_completion(crt.awake_and_get_event_id(), 
-                ExchangeResult::Disconnected, &Some(100));
+            sender.assert_completion(
+                crt.awake_and_get_event_id(),
+                ExchangeResult::Disconnected,
+                &Some(100),
+            );
         }
     }
 
@@ -912,6 +924,56 @@ mod tests {
 
             // verifies that sender is awoken and had value taken out after exchange
             sender1.assert_completion(crt.awake_and_get_event_id(), ExchangeResult::Done, &None);
+
+            // prepare sender once again
+            recv.register();
+
+            // receiver awoken and have got the right value after exchange
+            recv.assert_completion(
+                crt.awake_and_get_event_id(),
+                ExchangeResult::Done,
+                &Some(50),
+            );
+
+            // verifies that sender is awoken and had value taken out after exchange
+            sender2.assert_completion(crt.awake_and_get_event_id(), ExchangeResult::Done, &None);
+        }
+    }
+
+    #[test]
+    fn api_test_cancel_sender() {
+        let crt = ChannelRt::new();
+
+        // storage for exchange
+        let mut sender1: Option<u32> = Some(100);
+        let mut sender2: Option<u32> = Some(50);
+        let mut recv: Option<u32> = None;
+
+        let channel_id = crt.create();
+
+        // Hide the storage variable above to avoid having multiple mutable references
+        // to the same object.
+        let sender1 = SenderEmu::new(&crt, channel_id, &mut sender1);
+        let sender2 = SenderEmu::new(&crt, channel_id, &mut sender2);
+        let mut recv = RecvEmu::new(&crt, channel_id, &mut recv);
+
+        recv.register();
+        assert!(crt.awake_and_get_event_id().is_none());
+
+        sender1.register();
+        sender2.register();
+
+        unsafe {
+            // receiver awoken and have got the right value after exchange
+            recv.assert_completion(
+                crt.awake_and_get_event_id(),
+                ExchangeResult::Done,
+                &Some(100),
+            );
+            recv.clear_storage();
+
+            sender1.cancel();
+            drop(sender1);
 
             // prepare sender once again
             recv.register();
