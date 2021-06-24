@@ -535,26 +535,34 @@ impl std::fmt::Debug for ChannelNode {
 }
 
 struct InnerChannelRt {
-    node: Option<ChannelNode>, // TODO: many channels
+    nodes: Vec<ChannelNode>,
+    last_id: u32,
 }
 
 impl InnerChannelRt {
     fn new() -> Self {
-        InnerChannelRt { node: None }
+        InnerChannelRt { nodes: Vec::new(), last_id: 0 }
     }
 
     fn create(&mut self) -> ChannelId {
-        assert!(self.node.is_none());
-        let id = ChannelId(1);
-        self.node = Some(ChannelNode::new(id));
-        id
+        self.last_id += 1;
+        let channel_id = ChannelId(self.last_id);
+        self.nodes.push(ChannelNode::new(channel_id));
+        channel_id
+    }
+
+    fn find_index(&self, channel_id: ChannelId) -> usize {
+        self.nodes
+            .iter()
+            .position(|node| node.id == channel_id)
+            .unwrap()
     }
 
     fn get_node_mut(&mut self, channel_id: ChannelId) -> &mut ChannelNode {
-        self.node.as_mut().unwrap()
+        self.nodes.iter_mut().find(|node| node.id == channel_id).unwrap()
     }
     fn get_node(&mut self, channel_id: ChannelId) -> &ChannelNode {
-        self.node.as_ref().unwrap()
+        self.nodes.iter().find(|node| node.id == channel_id).unwrap()
     }
 
     fn add_sender_fut(
@@ -601,12 +609,7 @@ impl InnerChannelRt {
     }
 
     fn awake_and_get_event_id(&mut self) -> Option<EventId> {
-        // TODO: iteration for nodes
-        if self.node.is_none() {
-            return None;
-        }
-
-        Self::get_event_id_for_node(self.get_node_mut(ChannelId(1)))
+        self.nodes.iter().find_map(|node| Self::get_event_id_for_node(&node))
     }
 
     fn inc_sender(&mut self, channel_id: ChannelId) {
@@ -625,7 +628,7 @@ impl InnerChannelRt {
 
     fn drop_channel_if_needed(&mut self, channel_id: ChannelId) {
         if !self.get_node(channel_id).is_channel_alive() {
-            self.node = None;
+            self.nodes.remove(self.nodes.iter().position(|node| node.id == channel_id).unwrap());
             modtrace!("ChannelRt: {:?} has been dropped", channel_id);
         }
     }
@@ -1030,4 +1033,49 @@ mod tests {
             sender1.assert_completion(crt.awake_and_get_event_id(), ExchangeResult::Done, &None);
         }
     }
+
+    #[test]
+    fn api_test_two_channels() {
+        let crt = ChannelRt::new();
+
+        todo!();
+
+        // storage for exchange
+        let mut sender1: Option<u32> = Some(100);
+        let mut sender2: Option<u32> = Some(50);
+        let mut recv: Option<u32> = None;
+
+        let channel_id = crt.create();
+
+        // Hide the storage variable above to avoid having multiple mutable references
+        // to the same object.
+        let sender1 = SenderEmu::new(&crt, channel_id, &mut sender1);
+        let sender2 = SenderEmu::new(&crt, channel_id, &mut sender2);
+        let mut recv = RecvEmu::new(&crt, channel_id, &mut recv);
+
+        recv.register();
+        assert!(crt.awake_and_get_event_id().is_none());
+
+        sender1.register();
+        sender2.register();
+
+        unsafe {
+            // receiver awoken and have got the right value after exchange
+            recv.assert_completion(
+                crt.awake_and_get_event_id(),
+                ExchangeResult::Done,
+                &Some(100),
+            );
+            recv.clear_storage();
+
+            // cancel and drop the queued sender [Exch, Pin <- this one]
+            sender2.cancel();
+            drop(sender2);
+
+            // verifies that sender is awoken and had value taken out after exchange
+            sender1.assert_completion(crt.awake_and_get_event_id(), ExchangeResult::Done, &None);
+        }
+    }
+
+
 }
