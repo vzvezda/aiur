@@ -1033,49 +1033,4 @@ mod tests {
             sender1.assert_completion(crt.awake_and_get_event_id(), ExchangeResult::Done, &None);
         }
     }
-
-    #[test]
-    fn api_test_two_channels() {
-        let crt = ChannelRt::new();
-
-        todo!();
-
-        // storage for exchange
-        let mut sender1: Option<u32> = Some(100);
-        let mut sender2: Option<u32> = Some(50);
-        let mut recv: Option<u32> = None;
-
-        let channel_id = crt.create();
-
-        // Hide the storage variable above to avoid having multiple mutable references
-        // to the same object.
-        let sender1 = SenderEmu::new(&crt, channel_id, &mut sender1);
-        let sender2 = SenderEmu::new(&crt, channel_id, &mut sender2);
-        let mut recv = RecvEmu::new(&crt, channel_id, &mut recv);
-
-        recv.register();
-        assert!(crt.awake_and_get_event_id().is_none());
-
-        sender1.register();
-        sender2.register();
-
-        unsafe {
-            // receiver awoken and have got the right value after exchange
-            recv.assert_completion(
-                crt.awake_and_get_event_id(),
-                ExchangeResult::Done,
-                &Some(100),
-            );
-            recv.clear_storage();
-
-            // cancel and drop the queued sender [Exch, Pin <- this one]
-            sender2.cancel();
-            drop(sender2);
-
-            // verifies that sender is awoken and had value taken out after exchange
-            sender1.assert_completion(crt.awake_and_get_event_id(), ExchangeResult::Done, &None);
-        }
-    }
-
-
 }
