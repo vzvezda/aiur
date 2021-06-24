@@ -62,3 +62,42 @@ fn channel_compiles() {
     let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, 42);
 }
 
+// 
+#[test]
+fn channel_echo_server() {
+    struct AsyncState {
+        echo_data: u32,
+    }
+
+    async fn echo_server<'runtime, 'state>(
+        rt: &'runtime toy_rt::Runtime,
+        mut tx: toy_rt::ChSender<'runtime, u32>,
+        mut rx: toy_rt::ChReceiver<'runtime, u32>,
+    ) {
+        while let Ok(value) = rx.next().await {
+            tx.send(value).await.unwrap();
+        }
+    }
+
+    async fn echo_client(rt: &toy_rt::Runtime, _: ()) -> AsyncState {
+        let mut state = AsyncState { echo_data: 0, };
+        {
+            let mut scope = toy_rt::Scope::new_named(rt, "Echo");
+            let (tx1, mut rx1) = toy_rt::channel::<u32>(&rt);
+            let (mut tx2, rx2) = toy_rt::channel::<u32>(&rt);
+            scope.spawn(echo_server(rt, tx1, rx2));
+            tx2.send(42).await.unwrap();
+            state.echo_data = rx1.next().await.unwrap();
+            tx2.send(8).await.unwrap();
+            state.echo_data += rx1.next().await.unwrap();
+        }
+        state
+    }
+
+    let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, echo_client, ());
+
+    // Verify that that sent data was actually read by receiver.
+    assert_eq!(state.echo_data, 50);
+}
+
+

@@ -79,6 +79,10 @@ impl<'runtime, ReactorT: Reactor> RuntimeChannel<'runtime, ReactorT> {
         self.rt.channels().close_receiver(self.channel_id);
     }
 
+    fn channel_id(&self) -> ChannelId {
+        self.channel_id
+    }
+
     fn cancel_sender_fut(&self, event_id: EventId) {
         self.rt
             .channels()
@@ -181,7 +185,6 @@ impl<'runtime, T, ReactorT: Reactor> GetEventId for ChSenderFuture<'runtime, T, 
 impl<'runtime, T, ReactorT: Reactor> ChSenderFuture<'runtime, T, ReactorT> {
     fn new(rc: &RuntimeChannel<'runtime, ReactorT>, value: T) -> Self {
         let rc = RuntimeChannel::new(rc.rt, rc.channel_id);
-        rc.inc_sender();
         Self {
             rc,
             data: Some(value),
@@ -192,7 +195,8 @@ impl<'runtime, T, ReactorT: Reactor> ChSenderFuture<'runtime, T, ReactorT> {
 
     fn set_state(&mut self, new_state: PeerFutureState) {
         modtrace!(
-            "Channel/SenderFuture: state {:?} -> {:?}",
+            "Channel/SenderFuture: {:?} state {:?} -> {:?}",
+            self.rc.channel_id(),
             self.state,
             new_state
         );
@@ -250,7 +254,7 @@ impl<'runtime, T, ReactorT: Reactor> Future for ChSenderFuture<'runtime, T, Reac
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Self::Output> {
         let event_id = self.get_event_id();
-        modtrace!("Channel/ChSenderFuture::poll()");
+        modtrace!("Channel/ChSenderFuture::poll() {:?}", self.rc.channel_id());
 
         // Unsafe usage: this function does not moves out data from self, as required by
         // Pin::map_unchecked_mut().
@@ -260,7 +264,10 @@ impl<'runtime, T, ReactorT: Reactor> Future for ChSenderFuture<'runtime, T, Reac
             PeerFutureState::Created => this.transmit(&ctx.waker(), event_id), // always Pending
             PeerFutureState::Exchanging => this.close(event_id),
             PeerFutureState::Closed => {
-                panic!("aiur: channel::ChSenderFuture was polled after completion.")
+                panic!(
+                    "aiur: channel::ChSenderFuture {:?} was polled after completion.",
+                    this.rc.channel_id()
+                );
             }
         };
     }
@@ -268,18 +275,21 @@ impl<'runtime, T, ReactorT: Reactor> Future for ChSenderFuture<'runtime, T, Reac
 
 impl<'runtime, T, ReactorT: Reactor> Drop for ChSenderFuture<'runtime, T, ReactorT> {
     fn drop(&mut self) {
-        if matches!(self.state, PeerFutureState::Created) {
-            // ChSenderFuture was not polled (so it was not pinned) and it is not logically
-            // safe to invoke get_event_id_unchecked(). And we really don't have to, because
-            // without poll there were not add_sender_fut() invoked.
-            modtrace!("Channel/ChSenderFuture::drop()");
-            return;
+        if matches!(self.state, PeerFutureState::Exchanging) {
+            modtrace!(
+                "Channel/ChSenderFuture::drop() {:?} - cancel",
+                self.rc.channel_id()
+            );
+            // unsafe: this object was pinned, so it is ok to invoke get_event_id_unchecked
+            let event_id = unsafe { self.get_event_id_unchecked() };
+            self.rc.cancel_sender_fut(event_id);
+        } else {
+            // Created: ChSenderFuture was not polled (so it was not pinned) and it
+            // is not logically safe to invoke get_event_id_unchecked(). And we really
+            // don't have to, because without poll there were not add_sender_fut() invoked.
+            // Closed: there is no registration date in ChannelRt anymore
+            modtrace!("Channel/ChSenderFuture::drop() {:?}", self.rc.channel_id());
         }
-
-        modtrace!("Channel/ChSenderFuture::drop() - cancel");
-        // unsafe: this object was pinned, so it is ok to invoke get_event_id_unchecked
-        let event_id = unsafe { self.get_event_id_unchecked() };
-        self.rc.cancel_sender_fut(event_id);
     }
 }
 
@@ -309,7 +319,8 @@ impl<'runtime, T, ReactorT: Reactor> ChNextFuture<'runtime, T, ReactorT> {
 
     fn set_state(&mut self, new_state: PeerFutureState) {
         modtrace!(
-            "Channel/NextFuture: state {:?} -> {:?}",
+            "Channel/NextFuture: {:?} state {:?} -> {:?}",
+            self.rc.channel_id(),
             self.state,
             new_state
         );
@@ -361,7 +372,7 @@ impl<'runtime, T, ReactorT: Reactor> ChNextFuture<'runtime, T, ReactorT> {
 
 impl<'runtime, T, ReactorT: Reactor> Drop for ChNextFuture<'runtime, T, ReactorT> {
     fn drop(&mut self) {
-        modtrace!("Channel/NextFuture::drop()");
+        modtrace!("Channel/NextFuture::drop() {:?}", self.rc.channel_id());
         self.rc.cancel_receiver_fut();
     }
 }
@@ -371,7 +382,7 @@ impl<'runtime, T, ReactorT: Reactor> Future for ChNextFuture<'runtime, T, Reacto
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Self::Output> {
         let event_id = self.get_event_id();
-        modtrace!("Channel/NextFuture::poll()");
+        modtrace!("Channel/NextFuture::poll() {:?}", self.rc.channel_id());
 
         // Unsafe usage: this function does not moves out data from self, as required by
         // Pin::map_unchecked_mut().
@@ -381,32 +392,11 @@ impl<'runtime, T, ReactorT: Reactor> Future for ChNextFuture<'runtime, T, Reacto
             PeerFutureState::Created => this.transmit(&ctx.waker(), event_id), // always Pending
             PeerFutureState::Exchanging => this.close(event_id),
             PeerFutureState::Closed => {
-                panic!("aiur: channel::NextFuture was polled after completion.")
+                panic!(
+                    "aiur: channel::NextFuture {:?} was polled after completion.",
+                    this.rc.channel_id()
+                )
             }
         };
     }
 }
-
-/* Can be removed. This is how I verified that futures are unpin
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct ZeroReactor {}
-    impl Reactor for ZeroReactor {
-        fn wait(&self) -> EventId {
-            EventId::null()
-        }
-    }
-
-    fn is_unpin<T: Unpin>(_: T) {}
-
-    #[test]
-    fn channel_future_pinning() {
-        let rt = Runtime::new(ZeroReactor {});
-        let channel = rt.channels().create();
-        let rc = RuntimeChannel::new(&rt, channel);
-        is_unpin(ChNextFuture::<u32, ZeroReactor>::new(&rc));
-    }
-}
-*/
