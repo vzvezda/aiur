@@ -204,7 +204,7 @@ fn channel_sender_dropped() {
 
 // Just drop sender/receiver after creation.
 #[test]
-fn oneshot_drop_all() {
+fn channel_drop_all() {
     async fn messenger(rt: &toy_rt::Runtime, _: ()) {
         let (tx, rx) = toy_rt::channel::<u32>(&rt);
     }
@@ -214,7 +214,7 @@ fn oneshot_drop_all() {
 
 // Just drop sender/receiver after creation, but drop sender first.
 #[test]
-fn oneshot_drop_all_alt_order() {
+fn channel_drop_all_alt_order() {
     async fn messenger(rt: &toy_rt::Runtime, _: ()) {
         let (tx, rx) = toy_rt::channel::<u32>(&rt);
         drop(tx);
@@ -225,7 +225,7 @@ fn oneshot_drop_all_alt_order() {
 
 // Just drop sender/receiver after creation.
 #[test]
-fn oneshot_recv_from_dropped() {
+fn channel_recv_from_dropped() {
     async fn messenger(rt: &toy_rt::Runtime, _: ()) {
         let (tx, mut rx) = toy_rt::channel::<u32>(&rt);
         drop(tx);
@@ -238,7 +238,7 @@ fn oneshot_recv_from_dropped() {
 
 // Just drop sender/receiver after creation.
 #[test]
-fn oneshot_send_to_dropped() {
+fn channel_send_to_dropped() {
     async fn messenger(rt: &toy_rt::Runtime, _: ()) {
         let (mut tx, rx) = toy_rt::channel::<u32>(&rt);
         drop(rx);
