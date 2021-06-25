@@ -18,7 +18,7 @@ mod with_runtime;
 
 pub mod toy_rt;
 
-pub use oneshot::{oneshot, Receiver, Sender};
+pub use oneshot::{oneshot, RecverOnce, SenderOnce};
 pub use channel::{channel, ChReceiver, ChSender};
 pub use reactor::{EventId, GetEventId, Reactor, TemporalReactor};
 pub use runtime::Runtime;
@@ -38,16 +38,16 @@ macro_rules! export_runtime {
         pub use $crate::sleep;
         pub use $crate::GetEventId;
 
-        pub type Receiver<'runtime, T> = $crate::Receiver<'runtime, T, $reactor>;
-        pub type Sender<'runtime, T> = $crate::Sender<'runtime, T, $reactor>;
+        pub type RecverOnce<'runtime, T> = $crate::RecverOnce<'runtime, T, $reactor>;
+        pub type SenderOnce<'runtime, T> = $crate::SenderOnce<'runtime, T, $reactor>;
         pub type ChReceiver<'runtime, T> = $crate::ChReceiver<'runtime, T, $reactor>;
         pub type ChSender<'runtime, T> = $crate::ChSender<'runtime, T, $reactor>;
 
         pub fn oneshot<'runtime, T>(
             rt: &'runtime Runtime,
         ) -> (
-            $crate::Sender<'runtime, T, $reactor>,
-            $crate::Receiver<'runtime, T, $reactor>,
+            $crate::SenderOnce<'runtime, T, $reactor>,
+            $crate::RecverOnce<'runtime, T, $reactor>,
         ) {
             $crate::oneshot::<T, $reactor>(rt)
         }

@@ -21,11 +21,11 @@ const MODTRACE: bool = true;
 pub fn oneshot<'runtime, T, ReactorT: Reactor>(
     rt: &'runtime Runtime<ReactorT>,
 ) -> (
-    Sender<'runtime, T, ReactorT>,
-    Receiver<'runtime, T, ReactorT>,
+    SenderOnce<'runtime, T, ReactorT>,
+    RecverOnce<'runtime, T, ReactorT>,
 ) {
     let oneshot_id = rt.oneshots().create();
-    (Sender::new(rt, oneshot_id), Receiver::new(rt, oneshot_id))
+    (SenderOnce::new(rt, oneshot_id), RecverOnce::new(rt, oneshot_id))
 }
 
 /// Error type returned by Receiver: the only possible error is channel closed on sender's side.
@@ -71,19 +71,19 @@ impl<'runtime, ReactorT: Reactor> RuntimeOneshot<'runtime, ReactorT> {
 
 // -----------------------------------------------------------------------------------------------
 // Sender's end of the oneshot
-pub struct Sender<'runtime, T, ReactorT: Reactor> {
+pub struct SenderOnce<'runtime, T, ReactorT: Reactor> {
     inner: SenderInner<'runtime, T, ReactorT>, // use inner to hide enum internals
 }
 
-// Possible state of the Sender: before and after .send() is invoked
+// Possible state of the SenderOnce: before and after .send() is invoked
 enum SenderInner<'runtime, T, ReactorT: Reactor> {
     Created(RuntimeOneshot<'runtime, ReactorT>),
     Sent(PhantomData<T>), // Type required for Future
 }
 
-impl<'runtime, T, ReactorT: Reactor> Sender<'runtime, T, ReactorT> {
+impl<'runtime, T, ReactorT: Reactor> SenderOnce<'runtime, T, ReactorT> {
     fn new(rt: &'runtime Runtime<ReactorT>, oneshot_id: OneshotId) -> Self {
-        Sender {
+        SenderOnce {
             inner: SenderInner::Created(RuntimeOneshot::new(rt, oneshot_id)),
         }
     }
@@ -95,7 +95,7 @@ impl<'runtime, T, ReactorT: Reactor> Sender<'runtime, T, ReactorT> {
 
         match prev {
             SenderInner::Sent(_) => panic!(concat!(
-                "aiur: oneshot::Sender::send() invoked twice.",
+                "aiur: oneshot::SenderOnce::send() invoked twice.",
                 "Oneshot channel can be only used for one transfer."
             )),
 
@@ -104,7 +104,7 @@ impl<'runtime, T, ReactorT: Reactor> Sender<'runtime, T, ReactorT> {
     }
 }
 
-impl<'runtime, T, ReactorT: Reactor> Drop for Sender<'runtime, T, ReactorT> {
+impl<'runtime, T, ReactorT: Reactor> Drop for SenderOnce<'runtime, T, ReactorT> {
     fn drop(&mut self) {
         if let SenderInner::Created(ref runtime_channel) = self.inner {
             runtime_channel.cancel_sender();
@@ -202,22 +202,22 @@ impl<'runtime, T, ReactorT: Reactor> Drop for SenderFuture<'runtime, T, ReactorT
 }
 
 // -----------------------------------------------------------------------------------------------
-// Receiver (Future)
+// RecverOnce (Future)
 //
 // Receiver has a lot of copy paste with SenderFuture, but unification produced more code and
 // less clarity.
-pub struct Receiver<'runtime, T, ReactorT: Reactor> {
+pub struct RecverOnce<'runtime, T, ReactorT: Reactor> {
     runtime_channel: RuntimeOneshot<'runtime, ReactorT>,
     state: PeerFutureState,
     data: Option<T>,
     _pin: PhantomPinned, // we need the &data to be stable while pinned
 }
 
-impl<'runtime, T, ReactorT: Reactor> GetEventId for Receiver<'runtime, T, ReactorT> {}
+impl<'runtime, T, ReactorT: Reactor> GetEventId for RecverOnce<'runtime, T, ReactorT> {}
 
-impl<'runtime, T, ReactorT: Reactor> Receiver<'runtime, T, ReactorT> {
+impl<'runtime, T, ReactorT: Reactor> RecverOnce<'runtime, T, ReactorT> {
     fn new(rt: &'runtime Runtime<ReactorT>, oneshot_id: OneshotId) -> Self {
-        Receiver {
+        RecverOnce {
             runtime_channel: RuntimeOneshot::new(rt, oneshot_id),
             state: PeerFutureState::Created,
             data: None,
@@ -255,14 +255,14 @@ impl<'runtime, T, ReactorT: Reactor> Receiver<'runtime, T, ReactorT> {
     }
 }
 
-impl<'runtime, T, ReactorT: Reactor> Drop for Receiver<'runtime, T, ReactorT> {
+impl<'runtime, T, ReactorT: Reactor> Drop for RecverOnce<'runtime, T, ReactorT> {
     fn drop(&mut self) {
         modtrace!("Oneshot/ReceiverFuture::drop()");
         self.runtime_channel.cancel_receiver();
     }
 }
 
-impl<'runtime, T, ReactorT: Reactor> Future for Receiver<'runtime, T, ReactorT> {
+impl<'runtime, T, ReactorT: Reactor> Future for RecverOnce<'runtime, T, ReactorT> {
     type Output = Result<T, RecvError>;
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Self::Output> {

@@ -106,7 +106,7 @@ fn channel_two_channels() {
 }
 
 // Launch sender/receiver in a select!()-like mode, so once the first (receiver) is complete
-// the sender is dropped. 
+// the sender is dropped.
 #[test]
 fn channel_select_works() {
     struct AsyncState {
@@ -135,7 +135,6 @@ fn channel_select_works() {
 
     assert_eq!(state.recv_data, 42);
 }
-
 
 // When future that suppose to receive a channel just dropped. In this case sender
 // should return the value back.
@@ -171,7 +170,7 @@ fn channel_recv_dropped() {
     assert_eq!(state.recv_data, 0);
 }
 
-// When future that suppose to send a channel just dropped. In this case receiver 
+// When future that suppose to send a channel just dropped. In this case receiver
 // receiver an error.
 #[test]
 fn channel_sender_dropped() {
@@ -184,7 +183,9 @@ fn channel_sender_dropped() {
         mut rx: toy_rt::ChReceiver<'runtime, u32>,
         state: &'state mut AsyncState,
     ) {
-        rx.next().await.expect_err("Error because sender is dropped");
+        rx.next()
+            .await
+            .expect_err("Error because sender is dropped");
     }
 
     async fn messenger(rt: &toy_rt::Runtime, _: ()) -> AsyncState {
@@ -229,7 +230,9 @@ fn channel_recv_from_dropped() {
     async fn messenger(rt: &toy_rt::Runtime, _: ()) {
         let (tx, mut rx) = toy_rt::channel::<u32>(&rt);
         drop(tx);
-        rx.next().await.expect_err("receiver must receive error if sender is dropped");
+        rx.next()
+            .await
+            .expect_err("receiver must receive error if sender is dropped");
     }
 
     // State transitions for this test:
@@ -242,7 +245,9 @@ fn channel_send_to_dropped() {
     async fn messenger(rt: &toy_rt::Runtime, _: ()) {
         let (mut tx, rx) = toy_rt::channel::<u32>(&rt);
         drop(rx);
-        tx.send(42).await.expect_err("send must receive error if sender is dropped");
+        tx.send(42)
+            .await
+            .expect_err("send must receive error if sender is dropped");
     }
 
     // State transitions for this test:

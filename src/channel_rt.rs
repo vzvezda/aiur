@@ -132,7 +132,7 @@ impl RegInfo {
 // This is the state of the receiver
 enum RxState {
     Idle,
-    Registered(RegInfo),
+    Pinned(RegInfo),
     Gone,
 }
 
@@ -191,7 +191,7 @@ impl std::fmt::Debug for RxState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RxState::Idle => f.write_str("Idle"),
-            RxState::Registered(..) => f.write_str("Registered"),
+            RxState::Pinned(..) => f.write_str("Pinned"),
             RxState::Gone => f.write_str("Gone"),
         }
     }
@@ -267,7 +267,7 @@ impl ChannelNode {
     fn reg_recv_future(&mut self, reg_info: RegInfo) {
         self.traced(
             |node| {
-                node.rx_state = RxState::Registered(reg_info);
+                node.rx_state = RxState::Pinned(reg_info);
             },
             "reg receiver future",
         );
@@ -350,14 +350,14 @@ impl ChannelNode {
             return None; // no sender futures right now, but there are alive senders
         }
 
-        // Awake the receiver if it is Registered
+        // Awake the receiver if it is Pinned
         match &self.rx_state {
-            RxState::Registered(ref rx_reg_info) => {
-                // the state of sender is that it either have TxState::Registered in queue,
+            RxState::Pinned(ref rx_reg_info) => {
+                // the state of sender is that it either have TxState::Pinned in queue,
                 // or sender_alive = 0.  This is verified by code above.
                 debug_assert!(!self.tx_queue.is_empty() || self.senders_alive == 0);
 
-                // We should awake receiver to either swap (if TxState::Registered) or to
+                // We should awake receiver to either swap (if TxState::Pinned) or to
                 // receive ChannelClosed err (no alive senders)
                 return Some(WakeEvent::new(
                     Peer::Receiver,
@@ -368,13 +368,13 @@ impl ChannelNode {
             _ => (),
         }
 
-        // When we are here, the receiver is not in Idle and not in Registered, which means
+        // When we are here, the receiver is not in Idle and not in Pinned, which means
         // it is in Gone.
         debug_assert!(matches!(self.rx_state, RxState::Gone));
 
         // We now can awake any sender futures one by one if there are any.
         if let Some(first_tx_state) = self.tx_queue.first() {
-            // Btw sender future can be only in Registered state, asserted by the code above.
+            // Btw sender future can be only in Pinned state, asserted by the code above.
             debug_assert!(matches!(
                 first_tx_state.completion,
                 TxCompletion::Pinned(..)
@@ -411,7 +411,7 @@ impl ChannelNode {
     }
 
     // This is invoked by Sender future and it should be asserted that there is a
-    // sender future is Registered with either exchanged value or not.
+    // sender future is Pinned with either exchanged value or not.
     unsafe fn exchange_sender<T>(&mut self) -> ExchangeResult {
         if let Some(first_tx_state) = self.tx_queue.first_mut() {
             match (&self.rx_state, &first_tx_state.completion) {
@@ -444,7 +444,7 @@ impl ChannelNode {
                 }
             }
         } else {
-            // do not invoke exchange_sender() when sender does not have a future registered
+            // do not invoke exchange_sender() when sender does not have a future pinned
             panic!(
                 "ChannelRt: {:?} exhange_sender with no sender: {:?}",
                 self.id, self
@@ -453,7 +453,7 @@ impl ChannelNode {
     }
 
     // This is invoked by Receiver future and the precondition that receiver future has
-    // registered.
+    // pinned.
     unsafe fn exchange_receiver<T>(&mut self) -> ExchangeResult {
         if let Some(first_tx_state) = self.tx_queue.first_mut() {
             // Just do the actual data exchange between receiver and first sender in queue.
@@ -461,7 +461,7 @@ impl ChannelNode {
             // there are one more future removed from tx_queue, but it does not matter, the
             // exchange with first sender is ok.
             match (&self.rx_state, &first_tx_state.completion) {
-                (RxState::Registered(ref rx_reg_info), TxCompletion::Pinned(tx_ptr)) => {
+                (RxState::Pinned(ref rx_reg_info), TxCompletion::Pinned(tx_ptr)) => {
                     Self::exchange_impl::<T>(rx_reg_info.data, *tx_ptr);
                     self.traced(
                         move |node| {
@@ -473,7 +473,7 @@ impl ChannelNode {
                     ExchangeResult::Done
                 }
                 // other state are not legal and should be asserted by Channel Futures:
-                //    * Receiver: it must not call exhange_receiver() if not in Registered state
+                //    * Receiver: it must not call exhange_receiver() if not in Pinned state
                 //    * Sender: there should be no way exchange_receiver() is invoked while
                 //              sender is in Exhanged state.
                 _ => panic!(
@@ -496,10 +496,10 @@ impl ChannelNode {
     }
 }
 
-// Produce a state like "(Reg <- [Reg+7]:3)"
+// Produce a state like "(Pin <- [Pin+7]:3)"
 //                         ^       ^  ^   ^-senders alive
-//                         |       |  +-----how many sender futures registered (pinned)
-//                         |       +--------state of the first sender (registered, exhanged)
+//                         |       |  +-----how many sender futures registered
+//                         |       +--------state of the first sender (pinned, exhanged)
 //                         +----------------state of the receiver
 impl std::fmt::Debug for ChannelNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -507,7 +507,7 @@ impl std::fmt::Debug for ChannelNode {
 
         match self.rx_state {
             RxState::Idle => f.write_str("Idle <- "),
-            RxState::Registered(..) => f.write_str("Reg <- "),
+            RxState::Pinned(..) => f.write_str("Pin <- "),
             RxState::Gone => f.write_str("Gone <- "),
         }?;
 

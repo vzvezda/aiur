@@ -22,7 +22,7 @@ fn oneshot_spawn_recv_works() {
 
     async fn reader<'runtime, 'state>(
         rt: &'runtime toy_rt::Runtime,
-        rx: toy_rt::Receiver<'runtime, u32>,
+        rx: toy_rt::RecverOnce<'runtime, u32>,
         state: &'state mut AsyncState,
     ) {
         state.recv_data = rx.await.unwrap();
@@ -56,7 +56,7 @@ fn oneshot_spawn_sender_works() {
 
     async fn writer<'runtime, 'state>(
         rt: &'runtime toy_rt::Runtime,
-        mut tx: toy_rt::Sender<'runtime, u32>,
+        mut tx: toy_rt::SenderOnce<'runtime, u32>,
     ) {
         tx.send(42).await.unwrap();
     }
@@ -88,13 +88,13 @@ fn oneshot_select_works() {
     }
 
     async fn reader<'runtime, 'state>(
-        rx: toy_rt::Receiver<'runtime, u32>,
+        rx: toy_rt::RecverOnce<'runtime, u32>,
         state: &'state mut AsyncState,
     ) {
         state.recv_data = rx.await.unwrap();
     }
 
-    async fn writer<'runtime>(mut tx: toy_rt::Sender<'runtime, u32>) {
+    async fn writer<'runtime>(mut tx: toy_rt::SenderOnce<'runtime, u32>) {
         tx.send(42).await;
     }
 
@@ -123,7 +123,7 @@ fn oneshot_recv_dropped() {
 
     async fn reader<'runtime, 'state>(
         rt: &'runtime toy_rt::Runtime,
-        rx: toy_rt::Receiver<'runtime, u32>,
+        rx: toy_rt::RecverOnce<'runtime, u32>,
         state: &'state mut AsyncState,
     ) {
         // do thing on rx side to have rx dropped
@@ -159,7 +159,7 @@ fn oneshot_sender_dropped() {
 
     async fn reader<'runtime, 'state>(
         rt: &'runtime toy_rt::Runtime,
-        rx: toy_rt::Receiver<'runtime, u32>,
+        rx: toy_rt::RecverOnce<'runtime, u32>,
         state: &'state mut AsyncState,
     ) {
         rx.await.expect_err("Error because sender is dropped");
@@ -247,7 +247,7 @@ fn oneshot_two_channels() {
 
     async fn writer<'runtime, 'state>(
         rt: &'runtime toy_rt::Runtime,
-        mut tx: toy_rt::Sender<'runtime, u32>,
+        mut tx: toy_rt::SenderOnce<'runtime, u32>,
     ) {
         tx.send(42).await.unwrap();
     }
@@ -283,8 +283,8 @@ fn oneshot_two_channels_echo_server() {
 
     async fn echo_server<'runtime, 'state>(
         rt: &'runtime toy_rt::Runtime,
-        mut tx: toy_rt::Sender<'runtime, u32>,
-        mut rx: toy_rt::Receiver<'runtime, u32>,
+        mut tx: toy_rt::SenderOnce<'runtime, u32>,
+        mut rx: toy_rt::RecverOnce<'runtime, u32>,
     ) {
         tx.send(rx.await.unwrap()).await.unwrap();
     }
