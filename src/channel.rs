@@ -195,10 +195,22 @@ impl<'runtime, T, ReactorT: Reactor> ChSenderFuture<'runtime, T, ReactorT> {
 
     fn set_state(&mut self, new_state: PeerFutureState) {
         modtrace!(
-            "Channel/SenderFuture: {:?} state {:?} -> {:?}",
+            "Channel/ChSenderFuture: {:?} state {:?} -> {:?}",
             self.rc.channel_id(),
             self.state,
             new_state
+        );
+        self.state = new_state;
+    }
+
+    fn set_state_closed(&mut self, exchange_result: ExchangeResult) {
+        let new_state = PeerFutureState::Closed;
+        modtrace!(
+            "Channel/ChSenderFuture: {:?} state {:?} -> {:?}, exchange result: {:?}",
+            self.rc.channel_id(),
+            self.state,
+            new_state,
+            exchange_result
         );
         self.state = new_state;
     }
@@ -229,20 +241,26 @@ impl<'runtime, T, ReactorT: Reactor> ChSenderFuture<'runtime, T, ReactorT> {
             ExchangeResult::Done =>
             // exchange was perfect, return value to app
             {
-                self.set_state(PeerFutureState::Closed);
+                self.set_state_closed(ExchangeResult::Done);
                 Poll::Ready(Ok(()))
             }
             ExchangeResult::Disconnected =>
             // receiver is gone, nothing can be sent to this channel anymore
             {
-                self.set_state(PeerFutureState::Closed);
+                self.set_state_closed(ExchangeResult::Disconnected);
                 Poll::Ready(Err(self.data.take().unwrap()))
             }
             ExchangeResult::TryLater =>
             // receiver future gone but receiver channel object is still alive,
             // will wait for a new attempt.
             {
-                // self.set_state(PeerFutureState::Exchanging);
+                // keep state same like self.set_state(PeerFutureState::Exchanging);
+                modtrace!(
+                    "Channel/ChNextFuture: {:?} state {:?} exchange result: {:?}",
+                    self.rc.channel_id(),
+                    self.state,
+                    ExchangeResult::TryLater);
+
                 Poll::Pending
             }
         };
@@ -327,6 +345,19 @@ impl<'runtime, T, ReactorT: Reactor> ChNextFuture<'runtime, T, ReactorT> {
         self.state = new_state;
     }
 
+    // Same as set_state but different logging
+    fn set_state_closed(&mut self, exchange_result: ExchangeResult) {
+        let new_state = PeerFutureState::Closed;
+        modtrace!(
+            "Channel/NextFuture: {:?} state {:?} -> {:?}, exchange result: {:?}",
+            self.rc.channel_id(),
+            self.state,
+            new_state,
+            exchange_result
+        );
+        self.state = new_state;
+    }
+
     fn transmit(&mut self, waker: &Waker, event_id: EventId) -> Poll<Result<T, ChRecvError>> {
         self.set_state(PeerFutureState::Exchanging);
         self.rc.reg_receiver_fut(
@@ -351,19 +382,25 @@ impl<'runtime, T, ReactorT: Reactor> ChNextFuture<'runtime, T, ReactorT> {
             ExchangeResult::Done =>
             // exchange was perfect, return value to app
             {
-                self.set_state(PeerFutureState::Closed);
+                self.set_state_closed(ExchangeResult::Done);
                 Poll::Ready(Ok(self.data.take().unwrap()))
             }
             ExchangeResult::Disconnected =>
             // all senders are gone, no more values to recv
             {
-                self.set_state(PeerFutureState::Closed);
+                self.set_state_closed(ExchangeResult::Disconnected);
                 Poll::Ready(Err(ChRecvError))
             }
             ExchangeResult::TryLater =>
             // sender future gone, will wait for a new one
             {
-                // self.set_state(PeerFutureState::Exchanging);
+                // keep state same like self.set_state(PeerFutureState::Exchanging);
+                modtrace!(
+                    "Channel/ChNextFuture: {:?} state {:?} exchange result: {:?}",
+                    self.rc.channel_id(),
+                    self.state,
+                    ExchangeResult::TryLater);
+
                 Poll::Pending
             }
         };
@@ -373,7 +410,10 @@ impl<'runtime, T, ReactorT: Reactor> ChNextFuture<'runtime, T, ReactorT> {
 impl<'runtime, T, ReactorT: Reactor> Drop for ChNextFuture<'runtime, T, ReactorT> {
     fn drop(&mut self) {
         modtrace!("Channel/NextFuture::drop() {:?}", self.rc.channel_id());
-        self.rc.cancel_receiver_fut();
+        match self.state {
+            PeerFutureState::Exchanging => self.rc.cancel_receiver_fut(),
+            _ => (),
+        }
     }
 }
 

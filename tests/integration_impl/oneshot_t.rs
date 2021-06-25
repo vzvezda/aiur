@@ -126,7 +126,7 @@ fn oneshot_recv_dropped() {
         rx: toy_rt::Receiver<'runtime, u32>,
         state: &'state mut AsyncState,
     ) {
-        // do thing on sender side
+        // do thing on rx side to have rx dropped
     }
 
     async fn messenger(rt: &toy_rt::Runtime, _: ()) -> AsyncState {
