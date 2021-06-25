@@ -343,7 +343,7 @@ fn spawn_only_works() {
 // Test that should compile 
 #[test]
 fn spawn_soundness_ok() {
-    async fn target<'runtime, 'param>(rt: &'runtime toy_rt::Runtime, param: &'param mut u32) {
+    async fn target<'runtime, 'param>(_rt: &'runtime toy_rt::Runtime, param: &'param mut u32) {
         *param = 42;
     }
 

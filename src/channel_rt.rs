@@ -646,12 +646,9 @@ mod tests {
     // API tests here. These tests below helped me to develop the InnerChannelRt.
     use super::*;
 
-    // This creates (Waker, EventId) that can be used for testing Channel Runtime API. The waker
-    // is kind of fake it will not awake anything, but we need one for channel peers registration.
-    fn create_fake_event(event_ptr: *const ()) -> (Waker, EventId) {
-        return (create_fake_waker(event_ptr), EventId(event_ptr));
-    }
-
+    // This creates Waker that can be used for testing Channel Runtime API. This 
+    // waker is kind of fake it will not awake anything, but we need one for channel peers 
+    // registration.
     fn create_fake_waker(ptr: *const ()) -> std::task::Waker {
         use std::task::{RawWaker, RawWakerVTable};
         // Cloning the waker returns just the copy of the pointer.
@@ -870,7 +867,7 @@ mod tests {
         // Hide the storage variable above to avoid having multiple mutable references
         // to the same object.
         let sender = SenderEmu::new(&crt, channel_id, &mut sender);
-        let mut recv = RecvEmu::new(&crt, channel_id, &mut recv);
+        let recv = RecvEmu::new(&crt, channel_id, &mut recv);
 
         sender.register();
         assert!(crt.awake_and_get_event_id().is_none());
