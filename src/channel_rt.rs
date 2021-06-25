@@ -824,7 +824,7 @@ mod tests {
 
     #[test]
     fn api_test_good_exhange() {
-        let mut crt = ChannelRt::new();
+        let crt = ChannelRt::new();
 
         let mut sender: Option<u32> = Some(100);
         let mut recv: Option<u32> = None;
@@ -856,7 +856,7 @@ mod tests {
 
     #[test]
     fn api_test_cancel_receiver() {
-        let mut crt = ChannelRt::new();
+        let crt = ChannelRt::new();
 
         let mut sender: Option<u32> = Some(100);
         let mut recv: Option<u32> = None;
