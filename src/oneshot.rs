@@ -15,7 +15,7 @@ use crate::runtime::Runtime;
 const MODTRACE: bool = true;
 
 // -----------------------------------------------------------------------------------------------
-// Public oneshot() 
+// Public oneshot()
 
 /// Creates a new oneshot channel and returns ther pair of (sender, receiver).
 pub fn oneshot<'runtime, T, ReactorT: Reactor>(
@@ -25,7 +25,10 @@ pub fn oneshot<'runtime, T, ReactorT: Reactor>(
     RecverOnce<'runtime, T, ReactorT>,
 ) {
     let oneshot_id = rt.oneshots().create();
-    (SenderOnce::new(rt, oneshot_id), RecverOnce::new(rt, oneshot_id))
+    (
+        SenderOnce::new(rt, oneshot_id),
+        RecverOnce::new(rt, oneshot_id),
+    )
 }
 
 /// Error type returned by Receiver: the only possible error is channel closed on sender's side.
@@ -66,6 +69,10 @@ impl<'runtime, ReactorT: Reactor> RuntimeOneshot<'runtime, ReactorT> {
 
     fn cancel_receiver(&self) {
         self.rt.oneshots().cancel_receiver(self.oneshot_id);
+    }
+
+    fn oneshot_id(&self) -> OneshotId {
+        self.oneshot_id
     }
 }
 
@@ -142,7 +149,12 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
     }
 
     fn set_state(&mut self, new_state: PeerFutureState) {
-        modtrace!("Oneshot/SenderFuture: state {:?} -> {:?}", self.state, new_state);
+        modtrace!(
+            "Oneshot/SenderFuture: {:?} state {:?} -> {:?}",
+            self.runtime_channel.oneshot_id(),
+            self.state,
+            new_state
+        );
         self.state = new_state;
     }
 
@@ -177,7 +189,7 @@ impl<'runtime, T, ReactorT: Reactor> Future for SenderFuture<'runtime, T, Reacto
     type Output = Result<(), T>;
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Self::Output> {
-        modtrace!("Oneshot/SenderFuture::poll()");
+        modtrace!("Oneshot/SenderFuture::poll() {:?}", self.runtime_channel.oneshot_id());
         let event_id = self.get_event_id();
 
         // Unsafe usage: this function does not moves out data from self, as required by
@@ -226,7 +238,11 @@ impl<'runtime, T, ReactorT: Reactor> RecverOnce<'runtime, T, ReactorT> {
     }
 
     fn set_state(&mut self, new_state: PeerFutureState) {
-        modtrace!("Oneshot/ReceiverFuture: state {:?} -> {:?}", self.state, new_state);
+        modtrace!(
+            "Oneshot/ReceiverFuture: state {:?} -> {:?}",
+            self.state,
+            new_state
+        );
         self.state = new_state;
     }
 

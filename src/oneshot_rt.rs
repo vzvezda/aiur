@@ -22,12 +22,18 @@ use crate::reactor::EventId;
 const MODTRACE: bool = true;
 
 // Channel handle used by this low level channel API (which is only has crate visibility)
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 pub(crate) struct OneshotId(u32);
 
 impl OneshotId {
     pub(crate) fn null() -> Self {
         OneshotId(0)
+    }
+}
+
+impl std::fmt::Debug for OneshotId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("oneshot:{}", self.0))
     }
 }
 
@@ -219,7 +225,6 @@ impl InnerOneshotRt {
 
     // Changes the state of the sender. Panics if channel_id is not found.
     fn set_sender(&mut self, oneshot_id: OneshotId, sender: PeerState, log_context: &str) {
-
         // TODO: too many index access
         let idx = self.find_index(oneshot_id);
         let old = self.nodes[idx].clone();
@@ -240,7 +245,7 @@ impl InnerOneshotRt {
         );
 
         if self.nodes[idx].can_be_dropped() {
-            modtrace!("OneshotRt: remove channel from idx {}", idx);
+            modtrace!("OneshotRt: remove {:?} from idx {}", oneshot_id, idx);
             self.nodes.remove(idx);
         }
     }
@@ -265,9 +270,8 @@ impl InnerOneshotRt {
 
         if self.nodes[idx].can_be_dropped() {
             self.nodes.remove(idx);
-            modtrace!("OneshotRt: remove channel from idx {}", idx);
+            modtrace!("OneshotRt: remove {:?} from idx {}", oneshot_id, idx);
         }
-
     }
 
     fn set_receiver_ext(
@@ -330,11 +334,12 @@ impl InnerOneshotRt {
         );
     }
 
-
     // Scans all nodes and if there is a oneshot that ready to await, it makes waker.wake_by_ref()
     // and returns the event_id.
     fn awake_and_get_event_id(&self) -> Option<EventId> {
-        self.nodes.iter().find_map(|node| Self::get_event_id_for_node(&node))
+        self.nodes
+            .iter()
+            .find_map(|node| Self::get_event_id_for_node(&node))
     }
 
     /*
@@ -434,7 +439,6 @@ impl InnerOneshotRt {
         let tx_data = std::mem::transmute::<*mut (), *mut Option<T>>(tx_data);
         let rx_data = std::mem::transmute::<*mut (), *mut Option<T>>(rx_data);
         std::mem::swap(&mut *tx_data, &mut *rx_data);
-
         modtrace!("OneshotRt: exchange<T> mem::swap() just happened");
     }
 
