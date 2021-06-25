@@ -13,7 +13,7 @@ use aiur::toy_rt::{self};
 //const SLEEP_MODE: toy_rt::SleepMode = toy_rt::SleepMode::Actual;
 const SLEEP_MODE: toy_rt::SleepMode = toy_rt::SleepMode::Emulated;
 
-// Spawns a task and send a oneshot value from parent to child tasks.
+// Spawns a task and send a channel value from parent to child tasks.
 #[cfg(disable_this_for_a_while = "mut")]
 #[test]
 fn channel_works() {
@@ -137,6 +137,119 @@ fn channel_select_works() {
 }
 
 
+// When future that suppose to receive a channel just dropped. In this case sender
+// should return the value back.
+#[test]
+fn channel_recv_dropped() {
+    struct AsyncState {
+        recv_data: u32,
+    }
+
+    async fn reader<'runtime, 'state>(
+        rt: &'runtime toy_rt::Runtime,
+        rx: toy_rt::ChReceiver<'runtime, u32>,
+        state: &'state mut AsyncState,
+    ) {
+        // do thing on recv side
+    }
+
+    async fn messenger(rt: &toy_rt::Runtime, _: ()) -> AsyncState {
+        let mut state = AsyncState { recv_data: 0 };
+        {
+            let mut scope = toy_rt::Scope::new_named(rt, "Messenger");
+            let (mut tx, rx) = toy_rt::channel::<u32>(&rt);
+            scope.spawn(reader(rt, rx, &mut state));
+
+            // verify that sender receiver the value back as error
+            assert_eq!(tx.send(42).await.unwrap_err(), 42);
+        }
+        state
+    }
+
+    let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
+
+    assert_eq!(state.recv_data, 0);
+}
+
+// When future that suppose to send a channel just dropped. In this case receiver 
+// receiver an error.
+#[test]
+fn channel_sender_dropped() {
+    struct AsyncState {
+        recv_data: u32,
+    }
+
+    async fn reader<'runtime, 'state>(
+        rt: &'runtime toy_rt::Runtime,
+        mut rx: toy_rt::ChReceiver<'runtime, u32>,
+        state: &'state mut AsyncState,
+    ) {
+        rx.next().await.expect_err("Error because sender is dropped");
+    }
+
+    async fn messenger(rt: &toy_rt::Runtime, _: ()) -> AsyncState {
+        let mut state = AsyncState { recv_data: 0 };
+        {
+            let mut scope = toy_rt::Scope::new_named(rt, "Messenger");
+            let (mut tx, rx) = toy_rt::channel::<u32>(&rt);
+            scope.spawn(reader(rt, rx, &mut state));
+        }
+        state
+    }
+
+    let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
+
+    assert_eq!(state.recv_data, 0);
+}
+
+// Just drop sender/receiver after creation.
+#[test]
+fn oneshot_drop_all() {
+    async fn messenger(rt: &toy_rt::Runtime, _: ()) {
+        let (tx, rx) = toy_rt::channel::<u32>(&rt);
+    }
+
+    let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
+}
+
+// Just drop sender/receiver after creation, but drop sender first.
+#[test]
+fn oneshot_drop_all_alt_order() {
+    async fn messenger(rt: &toy_rt::Runtime, _: ()) {
+        let (tx, rx) = toy_rt::channel::<u32>(&rt);
+        drop(tx);
+    }
+
+    let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
+}
+
+// Just drop sender/receiver after creation.
+#[test]
+fn oneshot_recv_from_dropped() {
+    async fn messenger(rt: &toy_rt::Runtime, _: ()) {
+        let (tx, mut rx) = toy_rt::channel::<u32>(&rt);
+        drop(tx);
+        rx.next().await.expect_err("receiver must receive error if sender is dropped");
+    }
+
+    // State transitions for this test:
+    let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
+}
+
+// Just drop sender/receiver after creation.
+#[test]
+fn oneshot_send_to_dropped() {
+    async fn messenger(rt: &toy_rt::Runtime, _: ()) {
+        let (mut tx, rx) = toy_rt::channel::<u32>(&rt);
+        drop(rx);
+        tx.send(42).await.expect_err("send must receive error if sender is dropped");
+    }
+
+    // State transitions for this test:
+    let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
+}
+
+
 
 // Echo server that is able send response as long as sender alive.
 #[test]
@@ -173,5 +286,5 @@ fn channel_echo_server() {
     let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, echo_client, ());
 
     // Verify that that sent data was actually read by receiver.
-    assert_eq!(state.echo_data, 50);
+    assert_eq!(state.echo_data, 42 + 8);
 }
