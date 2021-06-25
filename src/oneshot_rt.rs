@@ -25,12 +25,6 @@ const MODTRACE: bool = true;
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub(crate) struct OneshotId(u32);
 
-impl OneshotId {
-    pub(crate) fn null() -> Self {
-        OneshotId(0)
-    }
-}
-
 impl std::fmt::Debug for OneshotId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!("oneshot:{}", self.0))

@@ -14,12 +14,6 @@ const MODTRACE: bool = true;
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub(crate) struct ChannelId(u32);
 
-impl ChannelId {
-    pub(crate) fn null() -> Self {
-        ChannelId(0)
-    }
-}
-
 impl std::fmt::Debug for ChannelId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!("chan:{}", self.0))
@@ -312,7 +306,7 @@ impl ChannelNode {
     // event. It does not awake waker by itself.
     fn get_wake_event(&self) -> Option<WakeEvent> {
         // Verify if there is a sender future that just got its data transfered to a receiver,
-        // that should be awoken. It does not matter in what state the Receiver is.
+        // that should be awoken. It does not matter in what state the receiver is.
         if let Some(ref first_tx_state) = self.tx_queue.first() {
             if let TxCompletion::Exchanged = first_tx_state.completion {
                 return Some(WakeEvent::new(
@@ -376,7 +370,11 @@ impl ChannelNode {
 
         // All senders are gone and receiver is gone: None would be ok, but it probably
         // a bug, such Node should be dropped and we don't want to get event for it.
-        debug_assert!(self.senders_alive > 0);
+        //
+        // later: commented this out because this function sometimes in impl Debug for 
+        // ChannelNode and this assert actually happens.
+        //
+        //debug_assert!(self.senders_alive > 0);
 
         // There are alive senders that does not have any active futures right now, means
         // this node does not produce any event.
@@ -474,14 +472,23 @@ impl ChannelNode {
     }
 }
 
-// Produce a state like "(Pin <- [Pin+7]:3)"
-//                         ^       ^  ^   ^-senders alive
-//                         |       |  +-----how many sender futures registered
-//                         |       +--------state of the first sender (pinned, exhanged)
-//                         +----------------state of the receiver
+// Produce a state like "(@Pin <- [Pin+7]:3)"
+//                        ^ ^       ^  ^   ^-senders alive
+//                        | |       |  +-----how many sender futures registered
+//                        | |       +--------state of the first sender (pinned, exhanged)
+//                        | +----------------state of the receiver
+//                        +------------------'@' indicates a future to be awoken in this state
 impl std::fmt::Debug for ChannelNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // "@" 
+        let (rx_event_tag, tx_event_tag) = self.get_wake_event()
+                .map_or(("", ""), |wake_event| match wake_event.peer {
+                    Peer::Sender => ("", "@"),
+                    Peer::Receiver => ("@", ""),
+                });
+
         f.write_str("(")?;
+        f.write_str(rx_event_tag)?;
 
         match self.rx_state {
             RxState::Idle => f.write_str("Idle <- "),
@@ -492,9 +499,13 @@ impl std::fmt::Debug for ChannelNode {
         let tx_len = self.tx_queue.len();
 
         if tx_len > 0 {
+
+            f.write_str("[")?;
+            f.write_str(tx_event_tag)?;
+
             match self.tx_queue[0].completion {
-                TxCompletion::Pinned(..) => f.write_str("[Pin"),
-                TxCompletion::Exchanged => f.write_str("[Exch"),
+                TxCompletion::Pinned(..) => f.write_str("Pin"),
+                TxCompletion::Exchanged => f.write_str("Exch"),
             }?;
 
             if tx_len > 1 {
@@ -530,13 +541,6 @@ impl InnerChannelRt {
         let channel_id = ChannelId(self.last_id);
         self.nodes.push(ChannelNode::new(channel_id));
         channel_id
-    }
-
-    fn find_index(&self, channel_id: ChannelId) -> usize {
-        self.nodes
-            .iter()
-            .position(|node| node.id == channel_id)
-            .unwrap()
     }
 
     fn get_node_mut(&mut self, channel_id: ChannelId) -> &mut ChannelNode {
