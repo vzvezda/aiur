@@ -249,8 +249,6 @@ fn channel_send_to_dropped() {
     let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
 }
 
-
-
 // Echo server that is able send response as long as sender alive.
 #[test]
 fn channel_echo_server() {
