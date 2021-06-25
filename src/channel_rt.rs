@@ -187,25 +187,6 @@ impl WakeEvent {
     }
 }
 
-impl std::fmt::Debug for RxState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RxState::Idle => f.write_str("Idle"),
-            RxState::Pinned(..) => f.write_str("Pinned"),
-            RxState::Gone => f.write_str("Gone"),
-        }
-    }
-}
-
-impl std::fmt::Debug for TxState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.completion {
-            TxCompletion::Pinned(..) => f.write_str("Pinned"),
-            TxCompletion::Exchanged => f.write_str("Exchanged"),
-        }
-    }
-}
-
 // This is a channel object
 struct ChannelNode {
     id: ChannelId,
@@ -476,10 +457,7 @@ impl ChannelNode {
                 //    * Receiver: it must not call exhange_receiver() if not in Pinned state
                 //    * Sender: there should be no way exchange_receiver() is invoked while
                 //              sender is in Exhanged state.
-                _ => panic!(
-                    "ChannelRt: exchange_receiver unexpected {:?} {:?}",
-                    self.rx_state, first_tx_state
-                ),
+                _ => panic!("ChannelRt: exchange_receiver unexpected {:?}", self),
             }
         } else {
             // There is no sender future
@@ -541,7 +519,10 @@ struct InnerChannelRt {
 
 impl InnerChannelRt {
     fn new() -> Self {
-        InnerChannelRt { nodes: Vec::new(), last_id: 0 }
+        InnerChannelRt {
+            nodes: Vec::new(),
+            last_id: 0,
+        }
     }
 
     fn create(&mut self) -> ChannelId {
@@ -559,10 +540,16 @@ impl InnerChannelRt {
     }
 
     fn get_node_mut(&mut self, channel_id: ChannelId) -> &mut ChannelNode {
-        self.nodes.iter_mut().find(|node| node.id == channel_id).unwrap()
+        self.nodes
+            .iter_mut()
+            .find(|node| node.id == channel_id)
+            .unwrap()
     }
     fn get_node(&mut self, channel_id: ChannelId) -> &ChannelNode {
-        self.nodes.iter().find(|node| node.id == channel_id).unwrap()
+        self.nodes
+            .iter()
+            .find(|node| node.id == channel_id)
+            .unwrap()
     }
 
     fn add_sender_fut(
@@ -609,7 +596,9 @@ impl InnerChannelRt {
     }
 
     fn awake_and_get_event_id(&mut self) -> Option<EventId> {
-        self.nodes.iter().find_map(|node| Self::get_event_id_for_node(&node))
+        self.nodes
+            .iter()
+            .find_map(|node| Self::get_event_id_for_node(&node))
     }
 
     fn inc_sender(&mut self, channel_id: ChannelId) {
@@ -628,7 +617,12 @@ impl InnerChannelRt {
 
     fn drop_channel_if_needed(&mut self, channel_id: ChannelId) {
         if !self.get_node(channel_id).is_channel_alive() {
-            self.nodes.remove(self.nodes.iter().position(|node| node.id == channel_id).unwrap());
+            self.nodes.remove(
+                self.nodes
+                    .iter()
+                    .position(|node| node.id == channel_id)
+                    .unwrap(),
+            );
             modtrace!("ChannelRt: {:?} has been dropped", channel_id);
         }
     }
