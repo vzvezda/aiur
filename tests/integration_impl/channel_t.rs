@@ -23,7 +23,7 @@ fn channel_works() {
 
     async fn reader<'runtime, 'state>(
         rt: &'runtime toy_rt::Runtime,
-        mut rx: toy_rt::ChReceiver<'runtime, u32>,
+        mut rx: toy_rt::Recver<'runtime, u32>,
         state: &'state mut AsyncState,
     ) {
         while let Ok(value) = rx.next().await {
@@ -75,7 +75,7 @@ fn channel_two_channels() {
 
     async fn writer<'runtime, 'state>(
         rt: &'runtime toy_rt::Runtime,
-        mut tx: toy_rt::ChSender<'runtime, u32>,
+        mut tx: toy_rt::Sender<'runtime, u32>,
         value: u32,
     ) {
         tx.send(value).await.unwrap();
@@ -114,13 +114,13 @@ fn channel_select_works() {
     }
 
     async fn reader<'runtime, 'state>(
-        mut rx: toy_rt::ChReceiver<'runtime, u32>,
+        mut rx: toy_rt::Recver<'runtime, u32>,
         state: &'state mut AsyncState,
     ) {
         state.recv_data = rx.next().await.unwrap();
     }
 
-    async fn writer<'runtime>(mut tx: toy_rt::ChSender<'runtime, u32>) {
+    async fn writer<'runtime>(mut tx: toy_rt::Sender<'runtime, u32>) {
         tx.send(42).await.unwrap();
     }
 
@@ -146,7 +146,7 @@ fn channel_recv_dropped() {
 
     async fn reader<'runtime, 'state>(
         rt: &'runtime toy_rt::Runtime,
-        rx: toy_rt::ChReceiver<'runtime, u32>,
+        rx: toy_rt::Recver<'runtime, u32>,
         state: &'state mut AsyncState,
     ) {
         // do thing on recv side
@@ -180,7 +180,7 @@ fn channel_sender_dropped() {
 
     async fn reader<'runtime, 'state>(
         rt: &'runtime toy_rt::Runtime,
-        mut rx: toy_rt::ChReceiver<'runtime, u32>,
+        mut rx: toy_rt::Recver<'runtime, u32>,
         state: &'state mut AsyncState,
     ) {
         rx.next()
@@ -263,8 +263,8 @@ fn channel_echo_server() {
 
     async fn echo_server<'runtime, 'state>(
         rt: &'runtime toy_rt::Runtime,
-        mut tx: toy_rt::ChSender<'runtime, u32>,
-        mut rx: toy_rt::ChReceiver<'runtime, u32>,
+        mut tx: toy_rt::Sender<'runtime, u32>,
+        mut rx: toy_rt::Recver<'runtime, u32>,
     ) {
         while let Ok(value) = rx.next().await {
             tx.send(value).await.unwrap();
