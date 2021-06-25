@@ -301,7 +301,7 @@ impl ChannelNode {
                         .unwrap(),
                 );
             },
-            "receiver future canceled",
+            "sender future canceled",
         );
     }
 

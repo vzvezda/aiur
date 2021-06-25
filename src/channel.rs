@@ -195,7 +195,7 @@ impl<'runtime, T, ReactorT: Reactor> ChSenderFuture<'runtime, T, ReactorT> {
 
     fn set_state(&mut self, new_state: PeerFutureState) {
         modtrace!(
-            "Channel/SenderFuture: {:?} state {:?} -> {:?}",
+            "Channel/ChSenderFuture: {:?} state {:?} -> {:?}",
             self.rc.channel_id(),
             self.state,
             new_state
@@ -373,7 +373,10 @@ impl<'runtime, T, ReactorT: Reactor> ChNextFuture<'runtime, T, ReactorT> {
 impl<'runtime, T, ReactorT: Reactor> Drop for ChNextFuture<'runtime, T, ReactorT> {
     fn drop(&mut self) {
         modtrace!("Channel/NextFuture::drop() {:?}", self.rc.channel_id());
-        self.rc.cancel_receiver_fut();
+        match self.state {
+            PeerFutureState::Exchanging => self.rc.cancel_receiver_fut(),
+            _ => (),
+        }
     }
 }
 
