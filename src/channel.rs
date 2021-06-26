@@ -18,13 +18,13 @@ const MODTRACE: bool = true;
 pub fn channel<'runtime, T, ReactorT: Reactor>(
     rt: &'runtime Runtime<ReactorT>,
 ) -> (
-    ChSender<'runtime, T, ReactorT>,
-    ChReceiver<'runtime, T, ReactorT>,
+    Sender<'runtime, T, ReactorT>,
+    Recver<'runtime, T, ReactorT>,
 ) {
     let channel_id = rt.channels().create();
     (
-        ChSender::new(rt, channel_id),
-        ChReceiver::new(rt, channel_id),
+        Sender::new(rt, channel_id),
+        Recver::new(rt, channel_id),
     )
 }
 
@@ -96,12 +96,12 @@ impl<'runtime, ReactorT: Reactor> RuntimeChannel<'runtime, ReactorT> {
 
 // -----------------------------------------------------------------------------------------------
 // Sender's end of the channel
-pub struct ChSender<'runtime, T, ReactorT: Reactor> {
+pub struct Sender<'runtime, T, ReactorT: Reactor> {
     rc: RuntimeChannel<'runtime, ReactorT>,
     temp: PhantomData<T>,
 }
 
-impl<'runtime, T, ReactorT: Reactor> ChSender<'runtime, T, ReactorT> {
+impl<'runtime, T, ReactorT: Reactor> Sender<'runtime, T, ReactorT> {
     fn new(rt: &'runtime Runtime<ReactorT>, channel_id: ChannelId) -> Self {
         let rc = RuntimeChannel::new(rt, channel_id);
         rc.inc_sender();
@@ -117,14 +117,14 @@ impl<'runtime, T, ReactorT: Reactor> ChSender<'runtime, T, ReactorT> {
 }
 
 // Sender is clonable: having many senders are ok
-impl<'runtime, T, ReactorT: Reactor> Clone for ChSender<'runtime, T, ReactorT> {
+impl<'runtime, T, ReactorT: Reactor> Clone for Sender<'runtime, T, ReactorT> {
     fn clone(&self) -> Self {
         // new() also increments sender's counters
         Self::new(self.rc.rt, self.rc.channel_id)
     }
 }
 
-impl<'runtime, T, ReactorT: Reactor> Drop for ChSender<'runtime, T, ReactorT> {
+impl<'runtime, T, ReactorT: Reactor> Drop for Sender<'runtime, T, ReactorT> {
     fn drop(&mut self) {
         // we have a -1 Sender. Question: is this possible to have a future:
         //    let sender = ...
@@ -138,12 +138,12 @@ impl<'runtime, T, ReactorT: Reactor> Drop for ChSender<'runtime, T, ReactorT> {
 
 // -----------------------------------------------------------------------------------------------
 // Receiver's end of the channel
-pub struct ChReceiver<'runtime, T, ReactorT: Reactor> {
+pub struct Recver<'runtime, T, ReactorT: Reactor> {
     rc: RuntimeChannel<'runtime, ReactorT>,
     temp: PhantomData<T>,
 }
 
-impl<'runtime, T, ReactorT: Reactor> ChReceiver<'runtime, T, ReactorT> {
+impl<'runtime, T, ReactorT: Reactor> Recver<'runtime, T, ReactorT> {
     fn new(rt: &'runtime Runtime<ReactorT>, channel_id: ChannelId) -> Self {
         Self {
             rc: RuntimeChannel::new(rt, channel_id),
@@ -156,7 +156,7 @@ impl<'runtime, T, ReactorT: Reactor> ChReceiver<'runtime, T, ReactorT> {
     }
 }
 
-impl<'runtime, T, ReactorT: Reactor> Drop for ChReceiver<'runtime, T, ReactorT> {
+impl<'runtime, T, ReactorT: Reactor> Drop for Recver<'runtime, T, ReactorT> {
     fn drop(&mut self) {
         self.rc.close_receiver();
     }
@@ -171,7 +171,7 @@ enum PeerFutureState {
 }
 
 // -----------------------------------------------------------------------------------------------
-// Leaf Future returned by async fn send() in ChSender
+// Leaf Future returned by async fn send() in Sender
 struct ChSenderFuture<'runtime, T, ReactorT: Reactor> {
     rc: RuntimeChannel<'runtime, ReactorT>,
     data: Option<T>,
@@ -312,7 +312,7 @@ impl<'runtime, T, ReactorT: Reactor> Drop for ChSenderFuture<'runtime, T, Reacto
 }
 
 // -----------------------------------------------------------------------------------------------
-// Leaf Future returned by async fn next() in ChReceiver
+// Leaf Future returned by async fn next() in Recver
 //
 // Receiver's ChNextFuture has a lot of copy paste with SenderFuture, but unification
 // produced more code and less clarity.

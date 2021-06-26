@@ -183,7 +183,7 @@ fn spawn_linear_works() {
             async_sleep_once(rt, 1).await;
         } else {
             counter.inc();
-            let mut scope = toy_rt::Scope::new_named(rt, &format!("xx#{}", depth));
+            let scope = toy_rt::Scope::new_named(rt, &format!("xx#{}", depth));
             scope.spawn(deep_dive(rt, depth - 1, counter));
         }
     }
@@ -238,7 +238,7 @@ fn spawn_tree_works() {
         // This tree layer does not do the 'node_counter.inc();'
         } else {
             node_counter.inc();
-            let mut scope = toy_rt::Scope::new_named(rt, &format!("xx#{}", depth));
+            let scope = toy_rt::Scope::new_named(rt, &format!("xx#{}", depth));
             for _i in 0..MAX_WIDTH {
                 scope.spawn(super_deep_dive(rt, depth - 1, node_counter));
             }
@@ -280,7 +280,7 @@ fn spawn_mixed_tree_works() {
     async fn sleep_and_deep_dive(rt: &toy_rt::Runtime, depth: u32, node_counter: &MutCounter) {
         if depth > 0 {
             node_counter.inc();
-            let mut scope = toy_rt::Scope::new_named(rt, &format!("xx#{}", depth));
+            let scope = toy_rt::Scope::new_named(rt, &format!("xx#{}", depth));
             for _i in 0..MAX_WIDTH {
                 toy_rt::sleep(rt, Duration::from_millis((1000 / MAX_WIDTH + 1).into())).await;
                 scope.spawn(sleep_and_deep_dive(rt, depth - 1, node_counter));
@@ -323,7 +323,7 @@ fn spawn_only_works() {
     async fn deep_dive_without_sleep(rt: &toy_rt::Runtime, depth: u32, node_counter: &MutCounter) {
         if depth > 0 {
             node_counter.inc();
-            let mut scope = toy_rt::Scope::new_named(rt, &format!("xx#{}", depth));
+            let scope = toy_rt::Scope::new_named(rt, &format!("xx#{}", depth));
             for _i in 0..MAX_WIDTH {
                 scope.spawn(deep_dive_without_sleep(rt, depth - 1, node_counter));
             }
@@ -343,7 +343,7 @@ fn spawn_only_works() {
 // Test that should compile 
 #[test]
 fn spawn_soundness_ok() {
-    async fn target<'runtime, 'param>(rt: &'runtime toy_rt::Runtime, param: &'param mut u32) {
+    async fn target<'runtime, 'param>(_rt: &'runtime toy_rt::Runtime, param: &'param mut u32) {
         *param = 42;
     }
 
@@ -351,7 +351,7 @@ fn spawn_soundness_ok() {
         let mut value : u32 = 0;
 
         if flag {
-            let mut scope = toy_rt::Scope::new_named(rt, "soundness_ok_test");
+            let scope = toy_rt::Scope::new_named(rt, "soundness_ok_test");
             // it should be fine to use '&mut value' here because it outlives the 'scope'.
             scope.spawn(target(rt, &mut value));
         }
@@ -371,7 +371,7 @@ fn spawn_soundness_mut_fail() {
     }
 
     async fn spawn_unsound_mut(rt: &toy_rt::Runtime, flag: bool) {
-        let mut scope = toy_rt::Scope::new_named(rt, "soundness_fail_test");
+        let scope = toy_rt::Scope::new_named(rt, "soundness_fail_test");
         if flag {
             let mut value : u32 = 0;
             // it is not ok to use '&mut value' here because the future returned by target()
@@ -392,7 +392,7 @@ fn spawn_soundness_ref_fail() {
     }
 
     async fn spawn_unsound_ref(rt: &toy_rt::Runtime, flag: bool) {
-        let mut scope = toy_rt::Scope::new_named(rt, "soundness_fail_test");
+        let scope = toy_rt::Scope::new_named(rt, "soundness_fail_test");
         if flag {
             let mut value : u32 = 0;
             // it is not ok to use '&mut value' here because the future returned by target()
