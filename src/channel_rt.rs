@@ -721,9 +721,11 @@ mod tests {
             assert_eq!(self.event_id, event_id.expect("Event is expected"));
         }
 
+        /*
         fn cancel(&self) {
             self.crt.cancel_receiver_fut(self.channel_id);
         }
+        */
 
         unsafe fn assert_value(&self, rhs: &Option<u32>) {
             assert_eq!(*(self.ptr as *const Option<u32>), *rhs);

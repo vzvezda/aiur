@@ -30,7 +30,7 @@ fn oneshot_spawn_recv_works() {
     async fn messenger(rt: &toy_rt::Runtime, _: ()) -> AsyncState {
         let mut state = AsyncState { recv_data: 0 };
         {
-            let mut scope = toy_rt::Scope::new_named(rt, "Messenger");
+            let scope = toy_rt::Scope::new_named(rt, "Messenger");
             let (mut tx, rx) = toy_rt::oneshot::<u32>(&rt);
             scope.spawn(reader(rx, &mut state));
             tx.send(42).await.unwrap();
@@ -60,7 +60,7 @@ fn oneshot_spawn_sender_works() {
     async fn messenger(rt: &toy_rt::Runtime, _: ()) -> AsyncState {
         let mut state = AsyncState { recv_data: 0 };
         {
-            let mut scope = toy_rt::Scope::new_named(rt, "Messenger");
+            let scope = toy_rt::Scope::new_named(rt, "Messenger");
             let (tx, rx) = toy_rt::oneshot::<u32>(&rt);
             scope.spawn(writer(tx));
             state.recv_data = rx.await.unwrap();
@@ -96,7 +96,7 @@ fn oneshot_select_works() {
 
     async fn messenger(rt: &toy_rt::Runtime, _: ()) -> AsyncState {
         let mut state = AsyncState { recv_data: 0 };
-        let (mut tx, rx) = toy_rt::oneshot::<u32>(&rt);
+        let (tx, rx) = toy_rt::oneshot::<u32>(&rt);
         future_utils::any2void(reader(rx, &mut state), writer(tx)).await;
         state
     }
@@ -112,62 +112,42 @@ fn oneshot_select_works() {
 // should return the value back.
 #[test]
 fn oneshot_recv_dropped() {
-    struct AsyncState {
-        recv_data: u32,
-    }
-
-    async fn reader<'runtime, 'state>(_rx: toy_rt::RecverOnce<'runtime, u32>) {
+    async fn reader<'runtime>(_rx: toy_rt::RecverOnce<'runtime, u32>) {
         // just drop _rx
     }
 
-    async fn messenger(rt: &toy_rt::Runtime, _: ()) -> AsyncState {
-        let mut state = AsyncState { recv_data: 0 };
-        {
-            let mut scope = toy_rt::Scope::new_named(rt, "Messenger");
-            let (mut tx, rx) = toy_rt::oneshot::<u32>(&rt);
-            scope.spawn(reader(rx));
+    async fn messenger(rt: &toy_rt::Runtime, _: ()) {
+        let scope = toy_rt::Scope::new_named(rt, "Messenger");
+        let (mut tx, rx) = toy_rt::oneshot::<u32>(&rt);
+        scope.spawn(reader(rx));
 
-            // verify that sender receiver the value back as error
-            assert_eq!(tx.send(42).await.unwrap_err(), 42);
-        }
-        state
+        // verify that sender receiver the value back as error
+        assert_eq!(tx.send(42).await.unwrap_err(), 42);
     }
 
     // State transitions for this test:
     // (C,C)->(R,C)->{R,D)->{E,D)->(D,D)
-    let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
-
-    assert_eq!(state.recv_data, 0);
+    toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
 }
 
 // When future that suppose to send a oneshot just dropped. In this case receiver
 // receiver an error.
 #[test]
 fn oneshot_sender_dropped() {
-    struct AsyncState {
-        recv_data: u32,
-    }
-
-    async fn reader<'runtime, 'state>(rx: toy_rt::RecverOnce<'runtime, u32>) {
+    async fn reader<'runtime>(rx: toy_rt::RecverOnce<'runtime, u32>) {
         rx.await.expect_err("Error because sender is dropped");
     }
 
-    async fn messenger(rt: &toy_rt::Runtime, _: ()) -> AsyncState {
-        let mut state = AsyncState { recv_data: 0 };
-        {
-            let mut scope = toy_rt::Scope::new_named(rt, "Messenger");
-            let (_tx, rx) = toy_rt::oneshot::<u32>(&rt);
-            scope.spawn(reader(rx));
-            // dropping _tx
-        }
-        state
+    async fn messenger(rt: &toy_rt::Runtime, _: ()) {
+        let scope = toy_rt::Scope::new_named(rt, "Messenger");
+        let (_tx, rx) = toy_rt::oneshot::<u32>(&rt);
+        scope.spawn(reader(rx));
+        // dropping _tx
     }
 
     // State transitions for this test:
     // (C,C)->(D,C)->(D,R}->(D,E)->(D,D)
-    let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
-
-    assert_eq!(state.recv_data, 0);
+    toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
 }
 
 // Just drop sender/receiver after creation.
@@ -246,7 +226,7 @@ fn oneshot_two_channels() {
             recv2_data: 0,
         };
         {
-            let mut scope = toy_rt::Scope::new_named(rt, "TwoOneshots");
+            let scope = toy_rt::Scope::new_named(rt, "TwoOneshots");
             let (tx1, rx1) = toy_rt::oneshot::<u32>(&rt);
             let (tx2, rx2) = toy_rt::oneshot::<u32>(&rt);
             scope.spawn(writer(tx1));
@@ -273,7 +253,7 @@ fn oneshot_two_channels_echo_server() {
 
     async fn echo_server<'runtime>(
         mut tx: toy_rt::SenderOnce<'runtime, u32>,
-        mut rx: toy_rt::RecverOnce<'runtime, u32>,
+        rx: toy_rt::RecverOnce<'runtime, u32>,
     ) {
         tx.send(rx.await.unwrap()).await.unwrap();
     }
@@ -281,7 +261,7 @@ fn oneshot_two_channels_echo_server() {
     async fn echo_client(rt: &toy_rt::Runtime, _: ()) -> AsyncState {
         let mut state = AsyncState { echo_data: 0 };
         {
-            let mut scope = toy_rt::Scope::new_named(rt, "Echo");
+            let scope = toy_rt::Scope::new_named(rt, "Echo");
             let (tx1, rx1) = toy_rt::oneshot::<u32>(&rt);
             let (mut tx2, rx2) = toy_rt::oneshot::<u32>(&rt);
             scope.spawn(echo_server(tx1, rx2));
