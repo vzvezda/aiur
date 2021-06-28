@@ -98,22 +98,22 @@ impl OneshotNode {
     }
 }
 
-// Produce a state like "(C,R}". See the state machine chart in code below for meaning.
+// Produce a state like "(C->R}". See the state machine chart in code below for meaning.
 impl std::fmt::Debug for OneshotNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.sender {
-            PeerState::Created => f.write_str("(C,"),
+            PeerState::Created => f.write_str("(C->"),
             PeerState::Registered(..) => {
                 if matches!(self.receiver, PeerState::Registered(..)) {
-                    f.write_str("(R,")
+                    f.write_str("(R->")
                 } else if matches!(self.receiver, PeerState::Created) {
-                    f.write_str("(R,")
+                    f.write_str("(R->")
                 } else {
-                    f.write_str("{R,")
+                    f.write_str("{R->")
                 }
             }
-            PeerState::Exchanged => f.write_str("(E,"),
-            PeerState::Dropped => f.write_str("(D,"),
+            PeerState::Exchanged => f.write_str("(E->"),
+            PeerState::Dropped => f.write_str("(D->"),
         }?;
 
         match self.receiver {

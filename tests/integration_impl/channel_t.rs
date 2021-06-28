@@ -248,3 +248,74 @@ fn channel_echo_server() {
     // Verify that that sent data was actually read by receiver.
     assert_eq!(state.echo_data, 42 + 8);
 }
+
+// This test produce a lot of channel exchange when there are several channels 
+// and channels has multiple senders.
+#[test]
+fn channel_multi_senders() {
+    async fn generate<'rt>(mut tx: toy_rt::Sender<'rt, u32>) {
+        for i in 1..5 {
+            tx.send(i).await.unwrap()
+        }
+    }
+
+    async fn accumulate(rt: &toy_rt::Runtime, name: &'static str) {
+        let scope = toy_rt::Scope::new_named(rt, name);
+        let (tx, mut rx) = toy_rt::channel::<u32>(&rt);
+        scope.spawn(generate(tx.clone()));
+        scope.spawn(generate(tx.clone()));
+        scope.spawn(generate(tx.clone()));
+        drop(tx);
+
+        let mut accum = 0;
+        while let Ok(value) = rx.next().await {
+            accum += value;
+        }
+
+        assert_eq!(accum, 30);
+    }
+
+    async fn start_multi_senders(rt: &toy_rt::Runtime, _: ()) {
+        // Each accumulate is 1 recv + 3 senders
+        let scope = toy_rt::Scope::new_named(rt, "parent");
+        scope.spawn(accumulate(rt, "accum1"));
+        scope.spawn(accumulate(rt, "accum2"));
+        scope.spawn(accumulate(rt, "accum3"));
+    }
+
+    toy_rt::with_runtime_in_mode(SLEEP_MODE, start_multi_senders, ());
+}
+
+
+#[test]
+fn channel_drop_peer() {
+    async fn send_3<'rt>(mut tx: toy_rt::Sender<'rt, u32>) {
+        tx.send(1).await.unwrap();
+        tx.send(2).await.unwrap();
+        tx.send(3).await.unwrap();
+    }
+
+    async fn recv_4<'rt>(mut rx: toy_rt::Recver<'rt, u32>) {
+        assert_eq!(rx.next().await.unwrap(), 1);
+        assert_eq!(rx.next().await.unwrap(), 2);
+        assert_eq!(rx.next().await.unwrap(), 3);
+        rx.next().await.unwrap(); // feature will be dropped on await point
+    }
+
+    async fn recv_2<'rt>(mut rx: toy_rt::Recver<'rt, u32>) {
+        assert_eq!(rx.next().await.unwrap(), 1);
+        assert_eq!(rx.next().await.unwrap(), 2);
+    }
+
+    async fn start_dropping_peers(rt: &toy_rt::Runtime, _: ()) {
+        // When a dropper receiver
+        let (tx, rx) = toy_rt::channel::<u32>(&rt);
+        future_utils::any2void(send_3(tx), recv_4(rx)).await;
+        // When a drop
+        let (tx, rx) = toy_rt::channel::<u32>(&rt);
+        future_utils::any2void(send_3(tx), recv_2(rx)).await;
+    }
+
+    toy_rt::with_runtime_in_mode(SLEEP_MODE, start_dropping_peers, ());
+}
+
