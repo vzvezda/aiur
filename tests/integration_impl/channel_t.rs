@@ -2,6 +2,9 @@
 //  / * \    aiur: the homeplanet for the famous executors
 // |' | '|   (c) 2020 - present, Vladimir Zvezda
 //   / \
+//
+// This module contains channel tests via publically exposed API. There is also private API unit
+// tests for channel in crate.
 
 // Use the toy runtime
 use super::future_utils::{self};
@@ -17,12 +20,13 @@ const SLEEP_MODE: toy_rt::SleepMode = toy_rt::SleepMode::Emulated;
 #[cfg(disable_this_for_a_while = "mut")]
 #[test]
 fn channel_works() {
+    // !! This does not currently works, access_violation because of the Vec in
+    // the state. There is an issue in github for it #23
     struct AsyncState {
         recv_data: Vec<u32>,
     }
 
     async fn reader<'runtime, 'state>(
-        rt: &'runtime toy_rt::Runtime,
         mut rx: toy_rt::Recver<'runtime, u32>,
         state: &'state mut AsyncState,
     ) {
@@ -38,9 +42,9 @@ fn channel_works() {
         {
             let scope = toy_rt::Scope::new_named(rt, "ChannelWorks");
             let (mut tx, rx) = toy_rt::channel::<u32>(&rt);
-            scope.spawn(reader(rt, rx, &mut state));
+            scope.spawn(reader(rx, &mut state));
             for i in 0..10u32 {
-                tx.send(i).await;
+                tx.send(i).await.unwrap();
             }
         }
         state
@@ -52,10 +56,27 @@ fn channel_works() {
     assert_eq!(state.recv_data.len(), 10);
 }
 
-// First test to verify if two simultaneous channel can co-exists and it was introduced with
-// support in runtime.
+/// Just drops sender/receiver channel side after creation without pinning.
 #[test]
-fn channel_two_channels() {
+fn channel_drop_sender_recver_unpinned_is_ok() {
+    async fn drop_recv_first(rt: &toy_rt::Runtime, _: ()) {
+        let (_tx, _rx) = toy_rt::channel::<u32>(&rt);
+        // dropped _rx, then _tx
+    }
+
+    async fn drop_sender_first(rt: &toy_rt::Runtime, _: ()) {
+        let (tx, _rx) = toy_rt::channel::<u32>(&rt);
+        drop(tx); // first drop tx
+    }
+
+    toy_rt::with_runtime_in_mode(SLEEP_MODE, drop_recv_first, ());
+    toy_rt::with_runtime_in_mode(SLEEP_MODE, drop_sender_first, ());
+}
+
+/// It was ever first test to verify if two simultaneous channels can co-exists and it was
+/// introduced with support in runtime.
+#[test]
+fn channel_two_channels_can_coexist() {
     struct AsyncState {
         recv1_data: u32,
         recv2_data: u32,
@@ -65,13 +86,13 @@ fn channel_two_channels() {
         tx.send(value).await.unwrap();
     }
 
-    async fn messenger(rt: &toy_rt::Runtime, _: ()) -> AsyncState {
+    async fn start_async(rt: &toy_rt::Runtime, _: ()) -> AsyncState {
         let mut state = AsyncState {
             recv1_data: 0,
             recv2_data: 0,
         };
         {
-            let scope = toy_rt::Scope::new_named(rt, "TwoOneshots");
+            let scope = toy_rt::Scope::new_named(rt, "ScopeForTwoChannels");
             let (tx1, mut rx1) = toy_rt::channel::<u32>(&rt);
             let (tx2, mut rx2) = toy_rt::channel::<u32>(&rt);
             scope.spawn(writer(tx1, 42));
@@ -82,17 +103,17 @@ fn channel_two_channels() {
         state
     }
 
-    let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
+    let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, start_async, ());
 
     // Verify that that sent data was actually read by receiver.
     assert_eq!(state.recv1_data, 42);
     assert_eq!(state.recv2_data, 100);
 }
 
-// Launch sender/receiver in a select!()-like mode, so once the first (receiver) is complete
-// the sender is dropped.
+/// Launches sender/receiver in a select!()-like mode, so once the first (receiver) is completed,
+/// the sender is dropped without being able to extract result.
 #[test]
-fn channel_select_works() {
+fn channel_select_sender_receiver_gives_value_in_receiver() {
     struct AsyncState {
         recv_data: u32,
     }
@@ -108,83 +129,62 @@ fn channel_select_works() {
         tx.send(42).await.unwrap();
     }
 
-    async fn messenger(rt: &toy_rt::Runtime, _: ()) -> AsyncState {
+    async fn start_async(rt: &toy_rt::Runtime, _: ()) -> AsyncState {
         let mut state = AsyncState { recv_data: 0 };
         let (tx, rx) = toy_rt::channel::<u32>(&rt);
         future_utils::any2void(reader(rx, &mut state), writer(tx)).await;
         state
     }
 
-    let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
+    let state = toy_rt::with_runtime_in_mode(SLEEP_MODE, start_async, ());
 
     assert_eq!(state.recv_data, 42);
 }
 
-// When future that suppose to receive a channel just dropped. In this case sender
-// should return the value back.
+/// When recver side of the channel is dropped while having pinned sender. Test verifies that
+/// Sender receives an error and the unsent value back.
 #[test]
-fn channel_recv_dropped() {
+fn channel_drop_recver_with_sender_pinned_gives_error() {
     async fn reader<'runtime>(_rx: toy_rt::Recver<'runtime, u32>) {
-        // do thing on recv side
+        // do thing on recv side,
+        // dropping _rx
     }
 
-    async fn messenger(rt: &toy_rt::Runtime, _: ()) {
-            let scope = toy_rt::Scope::new_named(rt, "Messenger");
-            let (mut tx, rx) = toy_rt::channel::<u32>(&rt);
-            scope.spawn(reader(rx));
+    async fn start_async(rt: &toy_rt::Runtime, _: ()) {
+        let scope = toy_rt::Scope::new_named(rt, "start_async");
+        let (mut tx, rx) = toy_rt::channel::<u32>(&rt);
+        scope.spawn(reader(rx));
 
-            // verify that sender receiver the value back as error
-            assert_eq!(tx.send(42).await.unwrap_err(), 42);
+        // verify that sender receiver the value back as error
+        assert_eq!(tx.send(42).await.unwrap_err(), 42);
     }
 
-    toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
+    toy_rt::with_runtime_in_mode(SLEEP_MODE, start_async, ());
 }
 
-// When future that suppose to send a channel just dropped. In this case receiver
-// receiver an error.
+/// When sender side of the channel is dropped while having pinned recver. In this case receiver
+/// gets an error about disconnected channel.
 #[test]
-fn channel_sender_dropped() {
+fn channel_drop_sender_with_recver_pinned_gives_error() {
     async fn reader<'runtime>(mut rx: toy_rt::Recver<'runtime, u32>) {
         rx.next()
             .await
-            .expect_err("Error because sender is dropped");
+            .expect_err("Expected error because sender is dropped");
     }
 
-    async fn messenger(rt: &toy_rt::Runtime, _: ()) {
-        let scope = toy_rt::Scope::new_named(rt, "Messenger");
+    async fn start_async(rt: &toy_rt::Runtime, _: ()) {
+        let scope = toy_rt::Scope::new_named(rt, "start_async");
         let (_tx, rx) = toy_rt::channel::<u32>(&rt);
         scope.spawn(reader(rx));
         // dropping _tx
     }
 
-    toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
+    toy_rt::with_runtime_in_mode(SLEEP_MODE, start_async, ());
 }
 
-// Just drop sender/receiver after creation.
+/// Drops the sender side and verifies if pinned recver gets an error.
 #[test]
-fn channel_drop_all() {
-    async fn messenger(rt: &toy_rt::Runtime, _: ()) {
-        let (_tx, _rx) = toy_rt::channel::<u32>(&rt);
-        // dropped _rx, then _tx
-    }
-
-    toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
-}
-
-// Just drop sender/receiver after creation, but drop sender first.
-#[test]
-fn channel_drop_all_alt_order() {
-    async fn messenger(rt: &toy_rt::Runtime, _: ()) {
-        let (tx, _rx) = toy_rt::channel::<u32>(&rt);
-        drop(tx); // first drop tx
-    }
-
-    toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
-}
-
-// Just drop sender/receiver after creation.
-#[test]
-fn channel_recv_from_dropped() {
+fn channel_recv_from_dropped_gives_error() {
     async fn messenger(rt: &toy_rt::Runtime, _: ()) {
         let (tx, mut rx) = toy_rt::channel::<u32>(&rt);
         drop(tx);
@@ -193,13 +193,12 @@ fn channel_recv_from_dropped() {
             .expect_err("receiver must receive error if sender is dropped");
     }
 
-    // State transitions for this test:
     toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
 }
 
-// Just drop sender/receiver after creation.
+/// Drops the recver side and verifies if pinned sender gets an error.
 #[test]
-fn channel_send_to_dropped() {
+fn channel_send_to_dropped_gives_error() {
     async fn messenger(rt: &toy_rt::Runtime, _: ()) {
         let (mut tx, rx) = toy_rt::channel::<u32>(&rt);
         drop(rx);
@@ -208,11 +207,11 @@ fn channel_send_to_dropped() {
             .expect_err("send must receive error if sender is dropped");
     }
 
-    // State transitions for this test:
     toy_rt::with_runtime_in_mode(SLEEP_MODE, messenger, ());
 }
 
-// Echo server that is able send response as long as sender alive.
+/// My second echo server that is able send received values back as long as its recv channel is
+/// alive.
 #[test]
 fn channel_echo_server() {
     struct AsyncState {
@@ -249,10 +248,10 @@ fn channel_echo_server() {
     assert_eq!(state.echo_data, 42 + 8);
 }
 
-// This test produce a lot of channel exchange when there are several channels 
-// and channels has multiple senders.
+/// This test produces a some channel exchanges with multiple channels and while each channel
+/// has multiple senders.
 #[test]
-fn channel_multi_senders() {
+fn channel_many_channel_many_senders_actually_works() {
     async fn generate<'rt>(mut tx: toy_rt::Sender<'rt, u32>) {
         for i in 1..5 {
             tx.send(i).await.unwrap()
@@ -277,18 +276,20 @@ fn channel_multi_senders() {
 
     async fn start_multi_senders(rt: &toy_rt::Runtime, _: ()) {
         // Each accumulate is 1 recv + 3 senders
-        let scope = toy_rt::Scope::new_named(rt, "parent");
-        scope.spawn(accumulate(rt, "accum1"));
-        scope.spawn(accumulate(rt, "accum2"));
-        scope.spawn(accumulate(rt, "accum3"));
+        {
+            let scope = toy_rt::Scope::new_named(rt, "parent");
+            scope.spawn(accumulate(rt, "accum1"));
+            scope.spawn(accumulate(rt, "accum3"));
+            scope.spawn(accumulate(rt, "accum2"));
+        }
     }
 
     toy_rt::with_runtime_in_mode(SLEEP_MODE, start_multi_senders, ());
 }
 
-
+/// Drops a pinned peer while channel exchange in progress
 #[test]
-fn channel_drop_peer() {
+fn channel_drop_pinned_peer_during_exchange_is_ok() {
     async fn send_3<'rt>(mut tx: toy_rt::Sender<'rt, u32>) {
         tx.send(1).await.unwrap();
         tx.send(2).await.unwrap();
@@ -308,14 +309,16 @@ fn channel_drop_peer() {
     }
 
     async fn start_dropping_peers(rt: &toy_rt::Runtime, _: ()) {
-        // When a dropper receiver
+        // 3 sends in sender, 4 in receiver. The send_3 exits first making the recv_4 future
+        // dropped.
         let (tx, rx) = toy_rt::channel::<u32>(&rt);
         future_utils::any2void(send_3(tx), recv_4(rx)).await;
-        // When a drop
+
+        // 3 sends in sender, 2 in receiver. The recv_2 exists first making the send3 future
+        // dropped.
         let (tx, rx) = toy_rt::channel::<u32>(&rt);
         future_utils::any2void(send_3(tx), recv_2(rx)).await;
     }
 
     toy_rt::with_runtime_in_mode(SLEEP_MODE, start_dropping_peers, ());
 }
-

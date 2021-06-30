@@ -46,6 +46,11 @@ impl ChannelRt {
         self.inner.borrow_mut().create()
     }
 
+    #[cfg(test)]
+    fn is_exist(&self, channel_id: ChannelId) -> bool {
+        self.inner.borrow().is_exist(channel_id)
+    }
+
     pub(crate) fn awake_and_get_event_id(&self) -> Option<EventId> {
         self.inner.borrow_mut().awake_and_get_event_id()
     }
@@ -543,6 +548,13 @@ impl InnerChannelRt {
         channel_id
     }
 
+    #[cfg(test)]
+    fn is_exist(&self, channel_id: ChannelId) -> bool {
+        self.nodes
+            .iter()
+            .find(|node| node.id == channel_id).is_some()
+    }
+
     fn get_node_mut(&mut self, channel_id: ChannelId) -> &mut ChannelNode {
         self.nodes
             .iter_mut()
@@ -678,21 +690,8 @@ mod tests {
         unsafe { Waker::from_raw(raw_waker) }
     }
 
-    #[test]
-    fn api_test_drop() {
-        let mut crt = InnerChannelRt::new();
-
-        let channel_id = crt.create();
-        crt.inc_sender(channel_id);
-        assert!(crt.awake_and_get_event_id().is_none());
-        crt.dec_sender(channel_id);
-        assert!(crt.awake_and_get_event_id().is_none());
-        crt.close_receiver(channel_id);
-        assert!(crt.awake_and_get_event_id().is_none());
-    }
-
     // This is a test sender
-    struct RecvEmu<'rt> {
+    struct RecverEmu<'rt> {
         crt: &'rt ChannelRt,
         channel_id: ChannelId,
         event_id: EventId,
@@ -700,7 +699,7 @@ mod tests {
         ptr: *mut (),
     }
 
-    impl<'rt> RecvEmu<'rt> {
+    impl<'rt> RecverEmu<'rt> {
         fn new(crt: &'rt ChannelRt, channel_id: ChannelId, storage: &mut Option<u32>) -> Self {
             let ptr = storage as *mut Option<u32> as *mut ();
             Self {
@@ -755,7 +754,7 @@ mod tests {
         }
     }
 
-    impl<'rt> Drop for RecvEmu<'rt> {
+    impl<'rt> Drop for RecverEmu<'rt> {
         fn drop(&mut self) {
             self.crt.close_receiver(self.channel_id);
         }
@@ -825,60 +824,90 @@ mod tests {
         }
     }
 
+    /// Verifies that channel is destroyed after both sender and recver no longer attached.
     #[test]
-    fn api_test_good_exhange() {
+    fn api_test_dec_references_destroys_channel() {
+        let mut crt = InnerChannelRt::new();
+
+        let channel_id = crt.create();
+        assert!(crt.is_exist(channel_id));
+        crt.inc_sender(channel_id);
+        assert!(crt.is_exist(channel_id));
+        assert!(crt.awake_and_get_event_id().is_none());
+        crt.dec_sender(channel_id);
+        assert!(crt.awake_and_get_event_id().is_none());
+        assert!(crt.is_exist(channel_id));
+        crt.close_receiver(channel_id);
+        assert!(crt.awake_and_get_event_id().is_none());
+        assert!(!crt.is_exist(channel_id));
+    }
+
+    /// Verifies that sender and receiver has value changed after being pinned and 
+    /// invoking exchange().
+    #[test]
+    fn api_test_peers_pinned_gives_value_exchanged() {
         let crt = ChannelRt::new();
 
         let mut sender: Option<u32> = Some(100);
-        let mut recv: Option<u32> = None;
+        let mut recver: Option<u32> = None;
 
         let channel_id = crt.create();
+        assert!(crt.is_exist(channel_id));
 
         // Hide the storage variable above to avoid having multiple mutable references
         // to the same object.
         let sender = SenderEmu::new(&crt, channel_id, &mut sender);
-        let mut recv = RecvEmu::new(&crt, channel_id, &mut recv);
+        let mut recver = RecverEmu::new(&crt, channel_id, &mut recver);
 
-        recv.register();
+        recver.register();
         assert!(crt.awake_and_get_event_id().is_none());
         sender.register();
 
         unsafe {
             // receiver awoken and have got the right value after exchange
-            recv.assert_completion(
+            recver.assert_completion(
                 crt.awake_and_get_event_id(),
                 ExchangeResult::Done,
                 &Some(100),
             );
-            recv.clear_storage();
+            recver.clear_storage();
 
             // verifies that sender is awoken and had value taken out after exchange
             sender.assert_completion(crt.awake_and_get_event_id(), ExchangeResult::Done, &None);
         }
+
+        drop(sender);
+        drop(recver);
+
+        assert!(!crt.is_exist(channel_id));
     }
 
+    /// When invoking cancel() on pinned receiver future instead of exchange(), it gives
+    /// the sender an error (Disconnecting) and the value back.
     #[test]
-    fn api_test_cancel_receiver() {
+    fn api_test_cancel_receiver_gives_disconnected_err_on_sender() {
         let crt = ChannelRt::new();
 
         let mut sender: Option<u32> = Some(100);
-        let mut recv: Option<u32> = None;
+        let mut recver: Option<u32> = None;
 
         let channel_id = crt.create();
 
         // Hide the storage variable above to avoid having multiple mutable references
         // to the same object.
         let sender = SenderEmu::new(&crt, channel_id, &mut sender);
-        let recv = RecvEmu::new(&crt, channel_id, &mut recv);
+        let recver = RecverEmu::new(&crt, channel_id, &mut recver);
 
         sender.register();
         assert!(crt.awake_and_get_event_id().is_none());
-        recv.register();
+        recver.register();
 
         unsafe {
+            assert!(crt.is_exist(channel_id));
+
             // verify if receiver is awoken
-            recv.assert_event(crt.awake_and_get_event_id());
-            drop(recv); // instead of exchange just close the receiver
+            recver.assert_event(crt.awake_and_get_event_id());
+            drop(recver); // instead of exchange just close the receiver
 
             // Sender now awoken with exchange result to be disconnected and value
             // still on senders side.
@@ -888,16 +917,21 @@ mod tests {
                 &Some(100),
             );
         }
+
+        drop(sender);
+
+        assert!(!crt.is_exist(channel_id));
     }
 
+    /// When there are two senders pinned, both values are received on recver side.
     #[test]
-    fn api_test_send_two_values() {
+    fn api_test_two_sender_send_value_gives_both_received() {
         let crt = ChannelRt::new();
 
         // storage for exchange
         let mut sender1: Option<u32> = Some(100);
         let mut sender2: Option<u32> = Some(50);
-        let mut recv: Option<u32> = None;
+        let mut recver: Option<u32> = None;
 
         let channel_id = crt.create();
 
@@ -905,9 +939,9 @@ mod tests {
         // to the same object.
         let sender1 = SenderEmu::new(&crt, channel_id, &mut sender1);
         let sender2 = SenderEmu::new(&crt, channel_id, &mut sender2);
-        let mut recv = RecvEmu::new(&crt, channel_id, &mut recv);
+        let mut recver = RecverEmu::new(&crt, channel_id, &mut recver);
 
-        recv.register();
+        recver.register();
         assert!(crt.awake_and_get_event_id().is_none());
 
         sender1.register();
@@ -915,21 +949,21 @@ mod tests {
 
         unsafe {
             // receiver awoken and have got the right value after exchange
-            recv.assert_completion(
+            recver.assert_completion(
                 crt.awake_and_get_event_id(),
                 ExchangeResult::Done,
                 &Some(100),
             );
-            recv.clear_storage();
+            recver.clear_storage();
 
             // verifies that sender is awoken and had value taken out after exchange
             sender1.assert_completion(crt.awake_and_get_event_id(), ExchangeResult::Done, &None);
 
             // prepare sender once again
-            recv.register();
+            recver.register();
 
             // receiver awoken and have got the right value after exchange
-            recv.assert_completion(
+            recver.assert_completion(
                 crt.awake_and_get_event_id(),
                 ExchangeResult::Done,
                 &Some(50),
@@ -940,14 +974,16 @@ mod tests {
         }
     }
 
+    /// If we cancel pinned/exchanged sender the receiver is ok and can receive further
+    /// values from senders.
     #[test]
-    fn api_test_cancel_exchanged_sender() {
+    fn api_test_cancel_exchanged_sender_does_not_affect_receiver() {
         let crt = ChannelRt::new();
 
         // storage for exchange
         let mut sender1: Option<u32> = Some(100);
         let mut sender2: Option<u32> = Some(50);
-        let mut recv: Option<u32> = None;
+        let mut recver: Option<u32> = None;
 
         let channel_id = crt.create();
 
@@ -955,9 +991,9 @@ mod tests {
         // to the same object.
         let sender1 = SenderEmu::new(&crt, channel_id, &mut sender1);
         let sender2 = SenderEmu::new(&crt, channel_id, &mut sender2);
-        let mut recv = RecvEmu::new(&crt, channel_id, &mut recv);
+        let mut recver = RecverEmu::new(&crt, channel_id, &mut recver);
 
-        recv.register();
+        recver.register();
         assert!(crt.awake_and_get_event_id().is_none());
 
         sender1.register();
@@ -965,21 +1001,21 @@ mod tests {
 
         unsafe {
             // receiver awoken and have got the right value after exchange
-            recv.assert_completion(
+            recver.assert_completion(
                 crt.awake_and_get_event_id(),
                 ExchangeResult::Done,
                 &Some(100),
             );
-            recv.clear_storage();
+            recver.clear_storage();
 
             sender1.cancel();
             drop(sender1);
 
             // prepare sender once again
-            recv.register();
+            recver.register();
 
             // receiver awoken and have got the right value after exchange
-            recv.assert_completion(
+            recver.assert_completion(
                 crt.awake_and_get_event_id(),
                 ExchangeResult::Done,
                 &Some(50),
@@ -990,14 +1026,15 @@ mod tests {
         }
     }
 
+    /// With canceling the scheduled sender receiver still receives values from another senders.
     #[test]
-    fn api_test_cancel_scheduled_sender() {
+    fn api_test_cancel_scheduled_sender_recv_still_receive_values_from_another_senders() {
         let crt = ChannelRt::new();
 
         // storage for exchange
         let mut sender1: Option<u32> = Some(100);
         let mut sender2: Option<u32> = Some(50);
-        let mut recv: Option<u32> = None;
+        let mut recver: Option<u32> = None;
 
         let channel_id = crt.create();
 
@@ -1005,9 +1042,9 @@ mod tests {
         // to the same object.
         let sender1 = SenderEmu::new(&crt, channel_id, &mut sender1);
         let sender2 = SenderEmu::new(&crt, channel_id, &mut sender2);
-        let mut recv = RecvEmu::new(&crt, channel_id, &mut recv);
+        let mut recver = RecverEmu::new(&crt, channel_id, &mut recver);
 
-        recv.register();
+        recver.register();
         assert!(crt.awake_and_get_event_id().is_none());
 
         sender1.register();
@@ -1015,12 +1052,12 @@ mod tests {
 
         unsafe {
             // receiver awoken and have got the right value after exchange
-            recv.assert_completion(
+            recver.assert_completion(
                 crt.awake_and_get_event_id(),
                 ExchangeResult::Done,
                 &Some(100),
             );
-            recv.clear_storage();
+            recver.clear_storage();
 
             // cancel and drop the queued sender [Exch, Pin <- this one]
             sender2.cancel();
