@@ -29,17 +29,12 @@ pub(crate) enum ExchangeResult {
 }
 
 // Both sender and receiver has almost the same API which is in this trait.
-trait PeerRt {
+pub(crate) trait PeerRt {
     fn pin(&self, waker: &Waker, event_id: EventId, pointer: *mut ());
     fn unpin(&self, event_id: EventId);
     fn close(&self);
 
     unsafe fn swap<T>(&self) -> ExchangeResult;
-}
-
-// Sender side of the channel is refcounted.
-trait RefCounted {
-    fn inc_ref(&self);
 }
 
 // Sender API
@@ -49,8 +44,8 @@ pub(crate) struct SenderRt<'rt> {
     channel_id: ChannelId,
 }
 
-impl<'rt> RefCounted for SenderRt<'rt> {
-    fn inc_ref(&self) {
+impl<'rt> SenderRt<'rt> {
+    pub(crate) fn inc_ref(&self) {
         self.channel_rt.inc_sender(self.channel_id)
     }
 }
@@ -738,9 +733,8 @@ mod tests {
     // API tests here. These tests below helped me to develop the InnerChannelRt.
     use super::*;
 
-    // This creates Waker that can be used for testing Channel Runtime API. This
-    // waker is kind of fake it will not awake anything, but we need one for channel peers
-    // registration.
+    // This creates std::task::Waker that can be used for testing Channel Runtime API. This
+    // waker is kind of fake it will not awake anything, but good enough for testing.
     fn create_fake_waker(ptr: *const ()) -> std::task::Waker {
         use std::task::{RawWaker, RawWakerVTable};
         // Cloning the waker returns just the copy of the pointer.
@@ -770,112 +764,38 @@ mod tests {
         unsafe { Waker::from_raw(raw_waker) }
     }
 
-    // This is a test sender
-    struct RecverEmu<'rt> {
-        recver_rt: RecverRt<'rt>,
+    // Unified code for SenderEmu and RecverEmu
+    struct PeerEmu<PeerT: PeerRt> {
+        peer_rt: PeerT,
         event_id: EventId,
         waker: Waker,
         ptr: *mut (),
     }
 
-    impl<'rt> RecverEmu<'rt> {
-        fn new(crt: &'rt ChannelRt, channel_id: ChannelId, storage: &mut Option<u32>) -> Self {
-            let ptr = storage as *mut Option<u32> as *mut ();
-            Self {
-                recver_rt: crt.recver_rt(channel_id), 
-                event_id: EventId(ptr),
-                waker: create_fake_waker(ptr),
-                ptr,
-            }
+    // Sender and Reciever helper structs for API tests. 
+    type SenderEmu<'rt> = PeerEmu<SenderRt<'rt>>;
+    type RecverEmu<'rt> = PeerEmu<RecverRt<'rt>>;
+
+    // Most of the code for sender and receiver are the same when using PeerRt trait
+    impl<PeerT: PeerRt> PeerEmu<PeerT> {
+        fn register(&self) {
+            self.peer_rt.pin(&self.waker, self.event_id, self.ptr);
         }
 
-        fn register(&self) {
-            self.recver_rt.pin(&self.waker, self.event_id, self.ptr);
+        fn cancel(&self) {
+            self.peer_rt.unpin(self.event_id);
         }
 
         fn assert_event(&self, event_id: Option<EventId>) {
             assert_eq!(self.event_id, event_id.expect("Event is expected"));
         }
-
-        /*
-        fn cancel(&self) {
-            self.crt.cancel_receiver_fut(self.channel_id);
-        }
-        */
 
         unsafe fn assert_value(&self, rhs: &Option<u32>) {
             assert_eq!(*(self.ptr as *const Option<u32>), *rhs);
         }
 
-        // Clear the receiver's value to be able to repeat
-        unsafe fn clear_storage(&mut self) {
-            (*(self.ptr as *mut Option<u32>)) = None;
-        }
-
         unsafe fn exchange(&self, expected: ExchangeResult) {
-            assert_eq!(
-                self.recver_rt.swap::<Option<u32>>(),
-                expected
-            );
-        }
-
-        unsafe fn assert_completion(
-            &mut self,
-            event_id: Option<EventId>,
-            exch_result: ExchangeResult,
-            value: &Option<u32>,
-        ) {
-            self.assert_event(event_id);
-            self.exchange(exch_result);
-            self.assert_value(value);
-        }
-    }
-
-    impl<'rt> Drop for RecverEmu<'rt> {
-        fn drop(&mut self) {
-            self.recver_rt.close();
-        }
-    }
-
-    // This is a test sender
-    struct SenderEmu<'rt> {
-        sender_rt: SenderRt<'rt>,
-        event_id: EventId,
-        waker: Waker,
-        ptr: *mut (),
-    }
-
-    impl<'rt> SenderEmu<'rt> {
-        fn new(crt: &'rt ChannelRt, channel_id: ChannelId, storage: &mut Option<u32>) -> Self {
-            let ptr = storage as *mut Option<u32> as *mut ();
-            crt.inc_sender(channel_id);
-            Self {
-                sender_rt: crt.sender_rt(channel_id),
-                event_id: EventId(ptr),
-                waker: create_fake_waker(ptr),
-                ptr,
-            }
-        }
-
-        fn register(&self) {
-            self.sender_rt
-                .pin(&self.waker, self.event_id, self.ptr);
-        }
-
-        fn assert_event(&self, event_id: Option<EventId>) {
-            assert_eq!(self.event_id, event_id.expect("Event is expected"));
-        }
-
-        fn cancel(&self) {
-            self.sender_rt.unpin(self.event_id);
-        }
-
-        unsafe fn exchange(&self, expected: ExchangeResult) {
-            assert_eq!(self.sender_rt.swap::<Option<u32>>(), expected);
-        }
-
-        unsafe fn assert_value(&self, rhs: &Option<u32>) {
-            assert_eq!(*(self.ptr as *mut Option<u32>), *rhs);
+            assert_eq!(self.peer_rt.swap::<Option<u32>>(), expected);
         }
 
         unsafe fn assert_completion(
@@ -890,9 +810,41 @@ mod tests {
         }
     }
 
-    impl<'rt> Drop for SenderEmu<'rt> {
+    // SenderEmu specific code: also has the inc_sender() for reference counting
+    impl<'rt> PeerEmu<SenderRt<'rt>> {
+        fn new(crt: &'rt ChannelRt, channel_id: ChannelId, storage: &mut Option<u32>) -> Self {
+            let ptr = storage as *mut Option<u32> as *mut ();
+            crt.inc_sender(channel_id);
+            Self {
+                peer_rt: crt.sender_rt(channel_id),
+                event_id: EventId(ptr),
+                waker: create_fake_waker(ptr),
+                ptr,
+            }
+        }
+    }
+
+    // RecverEmu specific code: also includes the clear storage for testing
+    impl<'rt> PeerEmu<RecverRt<'rt>> {
+        fn new(crt: &'rt ChannelRt, channel_id: ChannelId, storage: &mut Option<u32>) -> Self {
+            let ptr = storage as *mut Option<u32> as *mut ();
+            Self {
+                peer_rt: crt.recver_rt(channel_id),
+                event_id: EventId(ptr),
+                waker: create_fake_waker(ptr),
+                ptr,
+            }
+        }
+
+        // Clear the receiver's value to be able to repeat
+        unsafe fn clear_storage(&mut self) {
+            (*(self.ptr as *mut Option<u32>)) = None;
+        }
+    }
+
+    impl<PeerT: PeerRt> Drop for PeerEmu<PeerT> {
         fn drop(&mut self) {
-            self.sender_rt.close();
+            self.peer_rt.close();
         }
     }
 
