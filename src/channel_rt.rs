@@ -28,7 +28,7 @@ pub(crate) enum ExchangeResult {
     TryLater, // a new state in compare to oneshot
 }
 
-//
+// Both sender and receiver has almost the same API which is in this trait.
 trait PeerRt {
     fn pin(&self, waker: &Waker, event_id: EventId, pointer: *mut ());
     fn unpin(&self, event_id: EventId);
@@ -37,13 +37,19 @@ trait PeerRt {
     unsafe fn swap<T>(&self) -> ExchangeResult;
 }
 
+// Sender side of the channel is refcounted.
+trait RefCounted {
+    fn inc_ref(&self);
+}
+
+// Sender API
 #[derive(Copy, Clone)]
 pub(crate) struct SenderRt<'rt> {
     channel_rt: &'rt ChannelRt,
     channel_id: ChannelId,
 }
 
-impl<'rt> SenderRt<'rt> {
+impl<'rt> RefCounted for SenderRt<'rt> {
     fn inc_ref(&self) {
         self.channel_rt.inc_sender(self.channel_id)
     }
@@ -62,6 +68,28 @@ impl<'rt> PeerRt for SenderRt<'rt> {
     }
     fn close(&self) {
         self.channel_rt.dec_sender(self.channel_id)
+    }
+}
+
+// Receiver API
+pub(crate) struct RecverRt<'rt> {
+    channel_rt: &'rt ChannelRt,
+    channel_id: ChannelId,
+}
+
+impl<'rt> PeerRt for RecverRt<'rt> {
+    fn pin(&self, waker: &Waker, event_id: EventId, pointer: *mut ()) {
+        self.channel_rt
+            .reg_receiver_fut(self.channel_id, waker.clone(), event_id, pointer)
+    }
+    fn unpin(&self, _event_id: EventId) {
+        self.channel_rt.cancel_receiver_fut(self.channel_id)
+    }
+    unsafe fn swap<T>(&self) -> ExchangeResult {
+        self.channel_rt.exchange_receiver::<T>(self.channel_id)
+    }
+    fn close(&self) {
+        self.channel_rt.close_receiver(self.channel_id)
     }
 }
 
@@ -85,6 +113,13 @@ impl ChannelRt {
 
     pub(crate) fn sender_rt<'rt>(&'rt self, channel_id: ChannelId) -> SenderRt<'rt> {
         SenderRt {
+            channel_rt: self,
+            channel_id,
+        }
+    }
+
+    pub(crate) fn recver_rt<'rt>(&'rt self, channel_id: ChannelId) -> RecverRt<'rt> {
+        RecverRt {
             channel_rt: self,
             channel_id,
         }
@@ -737,8 +772,7 @@ mod tests {
 
     // This is a test sender
     struct RecverEmu<'rt> {
-        crt: &'rt ChannelRt,
-        channel_id: ChannelId,
+        recver_rt: RecverRt<'rt>,
         event_id: EventId,
         waker: Waker,
         ptr: *mut (),
@@ -748,8 +782,7 @@ mod tests {
         fn new(crt: &'rt ChannelRt, channel_id: ChannelId, storage: &mut Option<u32>) -> Self {
             let ptr = storage as *mut Option<u32> as *mut ();
             Self {
-                crt,
-                channel_id,
+                recver_rt: crt.recver_rt(channel_id), 
                 event_id: EventId(ptr),
                 waker: create_fake_waker(ptr),
                 ptr,
@@ -757,8 +790,7 @@ mod tests {
         }
 
         fn register(&self) {
-            self.crt
-                .reg_receiver_fut(self.channel_id, self.waker.clone(), self.event_id, self.ptr);
+            self.recver_rt.pin(&self.waker, self.event_id, self.ptr);
         }
 
         fn assert_event(&self, event_id: Option<EventId>) {
@@ -782,7 +814,7 @@ mod tests {
 
         unsafe fn exchange(&self, expected: ExchangeResult) {
             assert_eq!(
-                self.crt.exchange_receiver::<Option<u32>>(self.channel_id),
+                self.recver_rt.swap::<Option<u32>>(),
                 expected
             );
         }
@@ -801,14 +833,13 @@ mod tests {
 
     impl<'rt> Drop for RecverEmu<'rt> {
         fn drop(&mut self) {
-            self.crt.close_receiver(self.channel_id);
+            self.recver_rt.close();
         }
     }
 
     // This is a test sender
     struct SenderEmu<'rt> {
-        crt: &'rt ChannelRt,
-        channel_id: ChannelId,
+        sender_rt: SenderRt<'rt>,
         event_id: EventId,
         waker: Waker,
         ptr: *mut (),
@@ -819,8 +850,7 @@ mod tests {
             let ptr = storage as *mut Option<u32> as *mut ();
             crt.inc_sender(channel_id);
             Self {
-                crt,
-                channel_id,
+                sender_rt: crt.sender_rt(channel_id),
                 event_id: EventId(ptr),
                 waker: create_fake_waker(ptr),
                 ptr,
@@ -828,8 +858,8 @@ mod tests {
         }
 
         fn register(&self) {
-            self.crt
-                .add_sender_fut(self.channel_id, self.waker.clone(), self.event_id, self.ptr);
+            self.sender_rt
+                .pin(&self.waker, self.event_id, self.ptr);
         }
 
         fn assert_event(&self, event_id: Option<EventId>) {
@@ -837,14 +867,11 @@ mod tests {
         }
 
         fn cancel(&self) {
-            self.crt.cancel_sender_fut(self.channel_id, self.event_id);
+            self.sender_rt.unpin(self.event_id);
         }
 
         unsafe fn exchange(&self, expected: ExchangeResult) {
-            assert_eq!(
-                self.crt.exchange_sender::<Option<u32>>(self.channel_id),
-                expected
-            );
+            assert_eq!(self.sender_rt.swap::<Option<u32>>(), expected);
         }
 
         unsafe fn assert_value(&self, rhs: &Option<u32>) {
@@ -865,7 +892,7 @@ mod tests {
 
     impl<'rt> Drop for SenderEmu<'rt> {
         fn drop(&mut self) {
-            self.crt.dec_sender(self.channel_id);
+            self.sender_rt.close();
         }
     }
 
