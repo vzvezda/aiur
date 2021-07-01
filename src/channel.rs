@@ -30,7 +30,7 @@ pub fn channel<'runtime, T, ReactorT: Reactor>(
 
 /// Error type returned by Receiver: the only possible error is channel closed on sender's side.
 #[derive(Debug)] // Debug required for Result.unwrap()
-pub struct ChRecvError;
+pub struct RecvError;
 
 // -----------------------------------------------------------------------------------------------
 // RuntimeChannel: it is commonly used here: runtime and channel_id coupled together.
@@ -151,7 +151,7 @@ impl<'runtime, T, ReactorT: Reactor> Recver<'runtime, T, ReactorT> {
         }
     }
 
-    pub async fn next(&mut self) -> Result<T, ChRecvError> {
+    pub async fn next(&mut self) -> Result<T, RecvError> {
         ChNextFuture::new(&self.rc).await
     }
 }
@@ -358,7 +358,7 @@ impl<'runtime, T, ReactorT: Reactor> ChNextFuture<'runtime, T, ReactorT> {
         self.state = new_state;
     }
 
-    fn transmit(&mut self, waker: &Waker, event_id: EventId) -> Poll<Result<T, ChRecvError>> {
+    fn transmit(&mut self, waker: &Waker, event_id: EventId) -> Poll<Result<T, RecvError>> {
         self.set_state(PeerFutureState::Exchanging);
         self.rc.reg_receiver_fut(
             waker,
@@ -369,7 +369,7 @@ impl<'runtime, T, ReactorT: Reactor> ChNextFuture<'runtime, T, ReactorT> {
         Poll::Pending
     }
 
-    fn close(&mut self, event_id: EventId) -> Poll<Result<T, ChRecvError>> {
+    fn close(&mut self, event_id: EventId) -> Poll<Result<T, RecvError>> {
         if !self.rc.rt.is_awoken(event_id) {
             return Poll::Pending; // not our event, ignore the poll
         }
@@ -389,7 +389,7 @@ impl<'runtime, T, ReactorT: Reactor> ChNextFuture<'runtime, T, ReactorT> {
             // all senders are gone, no more values to recv
             {
                 self.set_state_closed(ExchangeResult::Disconnected);
-                Poll::Ready(Err(ChRecvError))
+                Poll::Ready(Err(RecvError))
             }
             ExchangeResult::TryLater =>
             // sender future gone, will wait for a new one
@@ -418,7 +418,7 @@ impl<'runtime, T, ReactorT: Reactor> Drop for ChNextFuture<'runtime, T, ReactorT
 }
 
 impl<'runtime, T, ReactorT: Reactor> Future for ChNextFuture<'runtime, T, ReactorT> {
-    type Output = Result<T, ChRecvError>;
+    type Output = Result<T, RecvError>;
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Self::Output> {
         let event_id = self.get_event_id();
