@@ -112,7 +112,7 @@ impl<'runtime, T, ReactorT: Reactor> Sender<'runtime, T, ReactorT> {
     }
 
     pub async fn send(&mut self, value: T) -> Result<(), T> {
-        ChSenderFuture::new(&self.rc, value).await
+        SenderFuture::new(&self.rc, value).await
     }
 }
 
@@ -172,7 +172,7 @@ enum PeerFutureState {
 
 // -----------------------------------------------------------------------------------------------
 // Leaf Future returned by async fn send() in Sender
-struct ChSenderFuture<'runtime, T, ReactorT: Reactor> {
+struct SenderFuture<'runtime, T, ReactorT: Reactor> {
     rc: RuntimeChannel<'runtime, ReactorT>,
     data: Option<T>,
     state: PeerFutureState,
@@ -180,9 +180,9 @@ struct ChSenderFuture<'runtime, T, ReactorT: Reactor> {
 }
 
 // This just adds the get_event_id() method to SenderFuture
-impl<'runtime, T, ReactorT: Reactor> GetEventId for ChSenderFuture<'runtime, T, ReactorT> {}
+impl<'runtime, T, ReactorT: Reactor> GetEventId for SenderFuture<'runtime, T, ReactorT> {}
 
-impl<'runtime, T, ReactorT: Reactor> ChSenderFuture<'runtime, T, ReactorT> {
+impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
     fn new(rc: &RuntimeChannel<'runtime, ReactorT>, value: T) -> Self {
         let rc = RuntimeChannel::new(rc.rt, rc.channel_id);
         Self {
@@ -195,7 +195,7 @@ impl<'runtime, T, ReactorT: Reactor> ChSenderFuture<'runtime, T, ReactorT> {
 
     fn set_state(&mut self, new_state: PeerFutureState) {
         modtrace!(
-            "Channel/ChSenderFuture: {:?} state {:?} -> {:?}",
+            "Channel/SenderFuture: {:?} state {:?} -> {:?}",
             self.rc.channel_id(),
             self.state,
             new_state
@@ -206,7 +206,7 @@ impl<'runtime, T, ReactorT: Reactor> ChSenderFuture<'runtime, T, ReactorT> {
     fn set_state_closed(&mut self, exchange_result: ExchangeResult) {
         let new_state = PeerFutureState::Closed;
         modtrace!(
-            "Channel/ChSenderFuture: {:?} state {:?} -> {:?}, exchange result: {:?}",
+            "Channel/SenderFuture: {:?} state {:?} -> {:?}, exchange result: {:?}",
             self.rc.channel_id(),
             self.state,
             new_state,
@@ -267,12 +267,12 @@ impl<'runtime, T, ReactorT: Reactor> ChSenderFuture<'runtime, T, ReactorT> {
     }
 }
 
-impl<'runtime, T, ReactorT: Reactor> Future for ChSenderFuture<'runtime, T, ReactorT> {
+impl<'runtime, T, ReactorT: Reactor> Future for SenderFuture<'runtime, T, ReactorT> {
     type Output = Result<(), T>;
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Self::Output> {
         let event_id = self.get_event_id();
-        modtrace!("Channel/ChSenderFuture::poll() {:?}", self.rc.channel_id());
+        modtrace!("Channel/SenderFuture::poll() {:?}", self.rc.channel_id());
 
         // Unsafe usage: this function does not moves out data from self, as required by
         // Pin::map_unchecked_mut().
@@ -283,7 +283,7 @@ impl<'runtime, T, ReactorT: Reactor> Future for ChSenderFuture<'runtime, T, Reac
             PeerFutureState::Exchanging => this.close(event_id),
             PeerFutureState::Closed => {
                 panic!(
-                    "aiur: channel::ChSenderFuture {:?} was polled after completion.",
+                    "aiur: channel::SenderFuture {:?} was polled after completion.",
                     this.rc.channel_id()
                 );
             }
@@ -291,22 +291,22 @@ impl<'runtime, T, ReactorT: Reactor> Future for ChSenderFuture<'runtime, T, Reac
     }
 }
 
-impl<'runtime, T, ReactorT: Reactor> Drop for ChSenderFuture<'runtime, T, ReactorT> {
+impl<'runtime, T, ReactorT: Reactor> Drop for SenderFuture<'runtime, T, ReactorT> {
     fn drop(&mut self) {
         if matches!(self.state, PeerFutureState::Exchanging) {
             modtrace!(
-                "Channel/ChSenderFuture::drop() {:?} - cancel",
+                "Channel/SenderFuture::drop() {:?} - cancel",
                 self.rc.channel_id()
             );
             // unsafe: this object was pinned, so it is ok to invoke get_event_id_unchecked
             let event_id = unsafe { self.get_event_id_unchecked() };
             self.rc.cancel_sender_fut(event_id);
         } else {
-            // Created: ChSenderFuture was not polled (so it was not pinned) and it
+            // Created: SenderFuture was not polled (so it was not pinned) and it
             // is not logically safe to invoke get_event_id_unchecked(). And we really
             // don't have to, because without poll there were not add_sender_fut() invoked.
             // Closed: there is no registration date in ChannelRt anymore
-            modtrace!("Channel/ChSenderFuture::drop() {:?}", self.rc.channel_id());
+            modtrace!("Channel/SenderFuture::drop() {:?}", self.rc.channel_id());
         }
     }
 }

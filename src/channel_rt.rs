@@ -28,6 +28,43 @@ pub(crate) enum ExchangeResult {
     TryLater, // a new state in compare to oneshot
 }
 
+//
+trait PeerRt {
+    fn pin(&self, waker: &Waker, event_id: EventId, pointer: *mut ());
+    fn unpin(&self, event_id: EventId);
+    fn close(&self);
+
+    unsafe fn swap<T>(&self) -> ExchangeResult;
+}
+
+#[derive(Copy, Clone)]
+pub(crate) struct SenderRt<'rt> {
+    channel_rt: &'rt ChannelRt,
+    channel_id: ChannelId,
+}
+
+impl<'rt> SenderRt<'rt> {
+    fn inc_ref(&self) {
+        self.channel_rt.inc_sender(self.channel_id)
+    }
+}
+
+impl<'rt> PeerRt for SenderRt<'rt> {
+    fn pin(&self, waker: &Waker, event_id: EventId, pointer: *mut ()) {
+        self.channel_rt
+            .add_sender_fut(self.channel_id, waker.clone(), event_id, pointer)
+    }
+    fn unpin(&self, event_id: EventId) {
+        self.channel_rt.cancel_sender_fut(self.channel_id, event_id)
+    }
+    unsafe fn swap<T>(&self) -> ExchangeResult {
+        self.channel_rt.exchange_sender::<T>(self.channel_id)
+    }
+    fn close(&self) {
+        self.channel_rt.dec_sender(self.channel_id)
+    }
+}
+
 // Runtime API for Channel futures
 pub(crate) struct ChannelRt {
     // Actual implementation forwarded to inner struct with mutability. Perhaps the
@@ -44,6 +81,13 @@ impl ChannelRt {
 
     pub(crate) fn create(&self) -> ChannelId {
         self.inner.borrow_mut().create()
+    }
+
+    pub(crate) fn sender_rt<'rt>(&'rt self, channel_id: ChannelId) -> SenderRt<'rt> {
+        SenderRt {
+            channel_rt: self,
+            channel_id,
+        }
     }
 
     #[cfg(test)]
@@ -376,7 +420,7 @@ impl ChannelNode {
         // All senders are gone and receiver is gone: None would be ok, but it probably
         // a bug, such Node should be dropped and we don't want to get event for it.
         //
-        // later: commented this out because this function sometimes in impl Debug for 
+        // later: commented this out because this function sometimes in impl Debug for
         // ChannelNode and this assert actually happens.
         //
         //debug_assert!(self.senders_alive > 0);
@@ -485,8 +529,9 @@ impl ChannelNode {
 //                        +------------------'@' indicates a future to be awoken in this state
 impl std::fmt::Debug for ChannelNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // "@" 
-        let (rx_event_tag, tx_event_tag) = self.get_wake_event()
+        // "@"
+        let (rx_event_tag, tx_event_tag) =
+            self.get_wake_event()
                 .map_or(("", ""), |wake_event| match wake_event.peer {
                     Peer::Sender => ("", "@"),
                     Peer::Receiver => ("@", ""),
@@ -504,7 +549,6 @@ impl std::fmt::Debug for ChannelNode {
         let tx_len = self.tx_queue.len();
 
         if tx_len > 0 {
-
             f.write_str("[")?;
             f.write_str(tx_event_tag)?;
 
@@ -552,7 +596,8 @@ impl InnerChannelRt {
     fn is_exist(&self, channel_id: ChannelId) -> bool {
         self.nodes
             .iter()
-            .find(|node| node.id == channel_id).is_some()
+            .find(|node| node.id == channel_id)
+            .is_some()
     }
 
     fn get_node_mut(&mut self, channel_id: ChannelId) -> &mut ChannelNode {
@@ -658,8 +703,8 @@ mod tests {
     // API tests here. These tests below helped me to develop the InnerChannelRt.
     use super::*;
 
-    // This creates Waker that can be used for testing Channel Runtime API. This 
-    // waker is kind of fake it will not awake anything, but we need one for channel peers 
+    // This creates Waker that can be used for testing Channel Runtime API. This
+    // waker is kind of fake it will not awake anything, but we need one for channel peers
     // registration.
     fn create_fake_waker(ptr: *const ()) -> std::task::Waker {
         use std::task::{RawWaker, RawWakerVTable};
@@ -842,7 +887,7 @@ mod tests {
         assert!(!crt.is_exist(channel_id));
     }
 
-    /// Verifies that sender and receiver has value changed after being pinned and 
+    /// Verifies that sender and receiver has value changed after being pinned and
     /// invoking exchange().
     #[test]
     fn api_test_peers_pinned_gives_value_exchanged() {
