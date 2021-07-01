@@ -152,7 +152,7 @@ impl<'runtime, T, ReactorT: Reactor> Recver<'runtime, T, ReactorT> {
     }
 
     pub async fn next(&mut self) -> Result<T, RecvError> {
-        ChNextFuture::new(&self.rc).await
+        NextFuture::new(&self.rc).await
     }
 }
 
@@ -256,7 +256,7 @@ impl<'runtime, T, ReactorT: Reactor> ChSenderFuture<'runtime, T, ReactorT> {
             {
                 // keep state same like self.set_state(PeerFutureState::Exchanging);
                 modtrace!(
-                    "Channel/ChNextFuture: {:?} state {:?} exchange result: {:?}",
+                    "Channel/NextFuture: {:?} state {:?} exchange result: {:?}",
                     self.rc.channel_id(),
                     self.state,
                     ExchangeResult::TryLater);
@@ -314,18 +314,18 @@ impl<'runtime, T, ReactorT: Reactor> Drop for ChSenderFuture<'runtime, T, Reacto
 // -----------------------------------------------------------------------------------------------
 // Leaf Future returned by async fn next() in Recver
 //
-// Receiver's ChNextFuture has a lot of copy paste with SenderFuture, but unification
+// Receiver's NextFuture has a lot of copy paste with SenderFuture, but unification
 // produced more code and less clarity.
-pub struct ChNextFuture<'runtime, T, ReactorT: Reactor> {
+pub struct NextFuture<'runtime, T, ReactorT: Reactor> {
     rc: RuntimeChannel<'runtime, ReactorT>,
     state: PeerFutureState,
     data: Option<T>,
     _pin: PhantomPinned, // we need the &data to be stable while pinned
 }
 
-impl<'runtime, T, ReactorT: Reactor> GetEventId for ChNextFuture<'runtime, T, ReactorT> {}
+impl<'runtime, T, ReactorT: Reactor> GetEventId for NextFuture<'runtime, T, ReactorT> {}
 
-impl<'runtime, T, ReactorT: Reactor> ChNextFuture<'runtime, T, ReactorT> {
+impl<'runtime, T, ReactorT: Reactor> NextFuture<'runtime, T, ReactorT> {
     fn new(rc: &'runtime RuntimeChannel<'runtime, ReactorT>) -> Self {
         Self {
             rc: RuntimeChannel::new(rc.rt, rc.channel_id),
@@ -396,7 +396,7 @@ impl<'runtime, T, ReactorT: Reactor> ChNextFuture<'runtime, T, ReactorT> {
             {
                 // keep state same like self.set_state(PeerFutureState::Exchanging);
                 modtrace!(
-                    "Channel/ChNextFuture: {:?} state {:?} exchange result: {:?}",
+                    "Channel/NextFuture: {:?} state {:?} exchange result: {:?}",
                     self.rc.channel_id(),
                     self.state,
                     ExchangeResult::TryLater);
@@ -407,7 +407,7 @@ impl<'runtime, T, ReactorT: Reactor> ChNextFuture<'runtime, T, ReactorT> {
     }
 }
 
-impl<'runtime, T, ReactorT: Reactor> Drop for ChNextFuture<'runtime, T, ReactorT> {
+impl<'runtime, T, ReactorT: Reactor> Drop for NextFuture<'runtime, T, ReactorT> {
     fn drop(&mut self) {
         modtrace!("Channel/NextFuture::drop() {:?}", self.rc.channel_id());
         match self.state {
@@ -417,7 +417,7 @@ impl<'runtime, T, ReactorT: Reactor> Drop for ChNextFuture<'runtime, T, ReactorT
     }
 }
 
-impl<'runtime, T, ReactorT: Reactor> Future for ChNextFuture<'runtime, T, ReactorT> {
+impl<'runtime, T, ReactorT: Reactor> Future for NextFuture<'runtime, T, ReactorT> {
     type Output = Result<T, RecvError>;
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Self::Output> {
