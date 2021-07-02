@@ -130,7 +130,7 @@ impl ChannelRt {
         self.inner.borrow_mut().awake_and_get_event_id()
     }
 
-    pub(crate) fn add_sender_fut(
+    fn add_sender_fut(
         &self,
         channel_id: ChannelId,
         waker: Waker,
@@ -142,7 +142,7 @@ impl ChannelRt {
             .add_sender_fut(channel_id, waker, event_id, data);
     }
 
-    pub(crate) fn reg_receiver_fut(
+    fn reg_receiver_fut(
         &self,
         channel_id: ChannelId,
         waker: Waker,
@@ -154,33 +154,33 @@ impl ChannelRt {
             .reg_receiver_fut(channel_id, waker, event_id, data);
     }
 
-    pub(crate) unsafe fn exchange_sender<T>(&self, channel_id: ChannelId) -> ExchangeResult {
+    unsafe fn exchange_sender<T>(&self, channel_id: ChannelId) -> ExchangeResult {
         self.inner.borrow_mut().exchange_sender::<T>(channel_id)
     }
 
-    pub(crate) unsafe fn exchange_receiver<T>(&self, channel_id: ChannelId) -> ExchangeResult {
+    unsafe fn exchange_receiver<T>(&self, channel_id: ChannelId) -> ExchangeResult {
         self.inner.borrow_mut().exchange_receiver::<T>(channel_id)
     }
 
-    pub(crate) fn inc_sender(&self, channel_id: ChannelId) {
+    fn inc_sender(&self, channel_id: ChannelId) {
         self.inner.borrow_mut().inc_sender(channel_id);
     }
 
-    pub(crate) fn dec_sender(&self, channel_id: ChannelId) {
+    fn dec_sender(&self, channel_id: ChannelId) {
         self.inner.borrow_mut().dec_sender(channel_id);
     }
 
-    pub(crate) fn close_receiver(&self, channel_id: ChannelId) {
+    fn close_receiver(&self, channel_id: ChannelId) {
         self.inner.borrow_mut().close_receiver(channel_id);
     }
 
-    pub(crate) fn cancel_sender_fut(&self, channel_id: ChannelId, event_id: EventId) {
+    fn cancel_sender_fut(&self, channel_id: ChannelId, event_id: EventId) {
         self.inner
             .borrow_mut()
             .cancel_sender_fut(channel_id, event_id);
     }
 
-    pub(crate) fn cancel_receiver_fut(&self, channel_id: ChannelId) {
+    fn cancel_receiver_fut(&self, channel_id: ChannelId) {
         self.inner.borrow_mut().cancel_receiver_fut(channel_id);
     }
 }
