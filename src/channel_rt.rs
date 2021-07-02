@@ -41,7 +41,7 @@ pub(crate) trait PeerRt {
 #[derive(Copy, Clone)]
 pub(crate) struct SenderRt<'rt> {
     channel_rt: &'rt ChannelRt,
-    channel_id: ChannelId,
+    pub(crate) channel_id: ChannelId, // used for tracing
 }
 
 impl<'rt> SenderRt<'rt> {
@@ -67,9 +67,10 @@ impl<'rt> PeerRt for SenderRt<'rt> {
 }
 
 // Receiver API
+#[derive(Copy, Clone)]
 pub(crate) struct RecverRt<'rt> {
     channel_rt: &'rt ChannelRt,
-    channel_id: ChannelId,
+    pub(crate) channel_id: ChannelId, // used for tracing
 }
 
 impl<'rt> PeerRt for RecverRt<'rt> {
