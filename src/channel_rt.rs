@@ -22,7 +22,7 @@ impl std::fmt::Debug for ChannelId {
 
 // The result of exchange<T> for send/receive future
 #[derive(PartialEq, Debug)]
-pub(crate) enum ExchangeResult {
+pub(crate) enum SwapResult {
     Done,
     Disconnected,
     TryLater, // a new state in compare to oneshot
@@ -34,7 +34,7 @@ pub(crate) trait PeerRt {
     fn unpin(&self, event_id: EventId);
     fn close(&self);
 
-    unsafe fn swap<T>(&self) -> ExchangeResult;
+    unsafe fn swap<T>(&self) -> SwapResult;
 }
 
 // Sender API
@@ -58,7 +58,7 @@ impl<'rt> PeerRt for SenderRt<'rt> {
     fn unpin(&self, event_id: EventId) {
         self.channel_rt.cancel_sender_fut(self.channel_id, event_id)
     }
-    unsafe fn swap<T>(&self) -> ExchangeResult {
+    unsafe fn swap<T>(&self) -> SwapResult {
         self.channel_rt.exchange_sender::<T>(self.channel_id)
     }
     fn close(&self) {
@@ -81,7 +81,7 @@ impl<'rt> PeerRt for RecverRt<'rt> {
     fn unpin(&self, _event_id: EventId) {
         self.channel_rt.cancel_receiver_fut(self.channel_id)
     }
-    unsafe fn swap<T>(&self) -> ExchangeResult {
+    unsafe fn swap<T>(&self) -> SwapResult {
         self.channel_rt.exchange_receiver::<T>(self.channel_id)
     }
     fn close(&self) {
@@ -154,11 +154,11 @@ impl ChannelRt {
             .reg_receiver_fut(channel_id, waker, event_id, data);
     }
 
-    unsafe fn exchange_sender<T>(&self, channel_id: ChannelId) -> ExchangeResult {
+    unsafe fn exchange_sender<T>(&self, channel_id: ChannelId) -> SwapResult {
         self.inner.borrow_mut().exchange_sender::<T>(channel_id)
     }
 
-    unsafe fn exchange_receiver<T>(&self, channel_id: ChannelId) -> ExchangeResult {
+    unsafe fn exchange_receiver<T>(&self, channel_id: ChannelId) -> SwapResult {
         self.inner.borrow_mut().exchange_receiver::<T>(channel_id)
     }
 
@@ -471,7 +471,7 @@ impl ChannelNode {
 
     // This is invoked by Sender future and it should be asserted that there is a
     // sender future is Pinned with either exchanged value or not.
-    unsafe fn exchange_sender<T>(&mut self) -> ExchangeResult {
+    unsafe fn exchange_sender<T>(&mut self) -> SwapResult {
         if let Some(first_tx_state) = self.tx_queue.first_mut() {
             match (&self.rx_state, &first_tx_state.completion) {
                 (RxState::Gone, TxCompletion::Pinned(..)) => {
@@ -482,7 +482,7 @@ impl ChannelNode {
                         "awoken sender",
                     );
                     // Receiver is gone and sender still holds the value
-                    ExchangeResult::Disconnected
+                    SwapResult::Disconnected
                 }
                 (_, TxCompletion::Exchanged) => {
                     self.traced(
@@ -493,7 +493,7 @@ impl ChannelNode {
                     );
                     // This is a typical good exhange scenario that receiver has moved
                     // the value out of sender storage and replanced it with None.
-                    ExchangeResult::Done
+                    SwapResult::Done
                 }
                 (_, _) => {
                     panic!(
@@ -513,7 +513,7 @@ impl ChannelNode {
 
     // This is invoked by Receiver future and the precondition that receiver future has
     // pinned.
-    unsafe fn exchange_receiver<T>(&mut self) -> ExchangeResult {
+    unsafe fn exchange_receiver<T>(&mut self) -> SwapResult {
         if let Some(first_tx_state) = self.tx_queue.first_mut() {
             // Just do the actual data exchange between receiver and first sender in queue.
             // It can happen that between we awake the receiver and it invokes exchange_receiver()
@@ -529,7 +529,7 @@ impl ChannelNode {
                         },
                         "mem::swapped",
                     );
-                    ExchangeResult::Done
+                    SwapResult::Done
                 }
                 // other state are not legal and should be asserted by Channel Futures:
                 //    * Receiver: it must not call exhange_receiver() if not in Pinned state
@@ -542,11 +542,11 @@ impl ChannelNode {
             if self.senders_alive == 0 {
                 // The receiver might awoken because there is no senders anymore, so
                 // the sender's end of the channel is Disconnected.
-                ExchangeResult::Disconnected
+                SwapResult::Disconnected
             } else {
                 // It looks like the sender future was dropped after Receiver future is awoken.
                 // Receiver can be awoken later.
-                ExchangeResult::TryLater
+                SwapResult::TryLater
             }
         }
     }
@@ -670,7 +670,7 @@ impl InnerChannelRt {
     // sender future is Registered with either exchanged value or not.
     //
     // Panics if channel_id is not found and if channel id is inconsistent state.
-    unsafe fn exchange_sender<T>(&mut self, channel_id: ChannelId) -> ExchangeResult {
+    unsafe fn exchange_sender<T>(&mut self, channel_id: ChannelId) -> SwapResult {
         self.get_node_mut(channel_id).exchange_sender::<T>()
     }
 
@@ -678,7 +678,7 @@ impl InnerChannelRt {
     // registered.
     //
     // Panics if channel_id is not found and if channel id is inconsistent state.
-    unsafe fn exchange_receiver<T>(&mut self, channel_id: ChannelId) -> ExchangeResult {
+    unsafe fn exchange_receiver<T>(&mut self, channel_id: ChannelId) -> SwapResult {
         self.get_node_mut(channel_id).exchange_receiver::<T>()
     }
 
@@ -795,14 +795,14 @@ mod tests {
             assert_eq!(*(self.ptr as *const Option<u32>), *rhs);
         }
 
-        unsafe fn exchange(&self, expected: ExchangeResult) {
+        unsafe fn exchange(&self, expected: SwapResult) {
             assert_eq!(self.peer_rt.swap::<Option<u32>>(), expected);
         }
 
         unsafe fn assert_completion(
             &self,
             event_id: Option<EventId>,
-            exch_result: ExchangeResult,
+            exch_result: SwapResult,
             value: &Option<u32>,
         ) {
             self.assert_event(event_id);
@@ -892,13 +892,13 @@ mod tests {
             // receiver awoken and have got the right value after exchange
             recver.assert_completion(
                 crt.awake_and_get_event_id(),
-                ExchangeResult::Done,
+                SwapResult::Done,
                 &Some(100),
             );
             recver.clear_storage();
 
             // verifies that sender is awoken and had value taken out after exchange
-            sender.assert_completion(crt.awake_and_get_event_id(), ExchangeResult::Done, &None);
+            sender.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &None);
         }
 
         drop(sender);
@@ -938,7 +938,7 @@ mod tests {
             // still on senders side.
             sender.assert_completion(
                 crt.awake_and_get_event_id(),
-                ExchangeResult::Disconnected,
+                SwapResult::Disconnected,
                 &Some(100),
             );
         }
@@ -976,13 +976,13 @@ mod tests {
             // receiver awoken and have got the right value after exchange
             recver.assert_completion(
                 crt.awake_and_get_event_id(),
-                ExchangeResult::Done,
+                SwapResult::Done,
                 &Some(100),
             );
             recver.clear_storage();
 
             // verifies that sender is awoken and had value taken out after exchange
-            sender1.assert_completion(crt.awake_and_get_event_id(), ExchangeResult::Done, &None);
+            sender1.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &None);
 
             // prepare sender once again
             recver.register();
@@ -990,12 +990,12 @@ mod tests {
             // receiver awoken and have got the right value after exchange
             recver.assert_completion(
                 crt.awake_and_get_event_id(),
-                ExchangeResult::Done,
+                SwapResult::Done,
                 &Some(50),
             );
 
             // verifies that sender is awoken and had value taken out after exchange
-            sender2.assert_completion(crt.awake_and_get_event_id(), ExchangeResult::Done, &None);
+            sender2.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &None);
         }
     }
 
@@ -1028,7 +1028,7 @@ mod tests {
             // receiver awoken and have got the right value after exchange
             recver.assert_completion(
                 crt.awake_and_get_event_id(),
-                ExchangeResult::Done,
+                SwapResult::Done,
                 &Some(100),
             );
             recver.clear_storage();
@@ -1042,12 +1042,12 @@ mod tests {
             // receiver awoken and have got the right value after exchange
             recver.assert_completion(
                 crt.awake_and_get_event_id(),
-                ExchangeResult::Done,
+                SwapResult::Done,
                 &Some(50),
             );
 
             // verifies that sender is awoken and had value taken out after exchange
-            sender2.assert_completion(crt.awake_and_get_event_id(), ExchangeResult::Done, &None);
+            sender2.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &None);
         }
     }
 
@@ -1079,7 +1079,7 @@ mod tests {
             // receiver awoken and have got the right value after exchange
             recver.assert_completion(
                 crt.awake_and_get_event_id(),
-                ExchangeResult::Done,
+                SwapResult::Done,
                 &Some(100),
             );
             recver.clear_storage();
@@ -1089,7 +1089,7 @@ mod tests {
             drop(sender2);
 
             // verifies that sender is awoken and had value taken out after exchange
-            sender1.assert_completion(crt.awake_and_get_event_id(), ExchangeResult::Done, &None);
+            sender1.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &None);
         }
     }
 }

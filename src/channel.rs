@@ -7,7 +7,7 @@ use std::marker::{PhantomData, PhantomPinned};
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
-use crate::channel_rt::{ExchangeResult, RecverRt, SenderRt, PeerRt};
+use crate::channel_rt::{SwapResult, RecverRt, SenderRt, PeerRt};
 use crate::reactor::{EventId, GetEventId, Reactor};
 use crate::runtime::Runtime;
 
@@ -141,7 +141,7 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
         self.state = new_state;
     }
 
-    fn set_state_closed(&mut self, exchange_result: ExchangeResult) {
+    fn set_state_closed(&mut self, exchange_result: SwapResult) {
         let new_state = PeerFutureState::Closed;
         modtrace!(
             "Channel/SenderFuture: {:?} state {:?} -> {:?}, exchange result: {:?}",
@@ -176,19 +176,19 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
         // It can also happen that sender was awoken because receiver is dropped,
         // and it would receive disconnected event.
         return match unsafe { self.sender_rt.swap::<T>() } {
-            ExchangeResult::Done =>
+            SwapResult::Done =>
             // exchange was perfect, return value to app
             {
-                self.set_state_closed(ExchangeResult::Done);
+                self.set_state_closed(SwapResult::Done);
                 Poll::Ready(Ok(()))
             }
-            ExchangeResult::Disconnected =>
+            SwapResult::Disconnected =>
             // receiver is gone, nothing can be sent to this channel anymore
             {
-                self.set_state_closed(ExchangeResult::Disconnected);
+                self.set_state_closed(SwapResult::Disconnected);
                 Poll::Ready(Err(self.data.take().unwrap()))
             }
-            ExchangeResult::TryLater =>
+            SwapResult::TryLater =>
             // receiver future gone but receiver channel object is still alive,
             // will wait for a new attempt.
             {
@@ -197,7 +197,7 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
                     "Channel/NextFuture: {:?} state {:?} exchange result: {:?}",
                     self.sender_rt.channel_id,
                     self.state,
-                    ExchangeResult::TryLater
+                    SwapResult::TryLater
                 );
 
                 Poll::Pending
@@ -287,7 +287,7 @@ impl<'runtime, T, ReactorT: Reactor> NextFuture<'runtime, T, ReactorT> {
     }
 
     // Same as set_state but different logging
-    fn set_state_closed(&mut self, exchange_result: ExchangeResult) {
+    fn set_state_closed(&mut self, exchange_result: SwapResult) {
         let new_state = PeerFutureState::Closed;
         modtrace!(
             "Channel/NextFuture: {:?} state {:?} -> {:?}, exchange result: {:?}",
@@ -320,19 +320,19 @@ impl<'runtime, T, ReactorT: Reactor> NextFuture<'runtime, T, ReactorT> {
         // also happen that receiver was awoken because all sender channels are dropped,
         // and it would receive disconnected event.
         return match unsafe { self.recver_rt.swap::<T>() } {
-            ExchangeResult::Done =>
+            SwapResult::Done =>
             // exchange was perfect, return value to app
             {
-                self.set_state_closed(ExchangeResult::Done);
+                self.set_state_closed(SwapResult::Done);
                 Poll::Ready(Ok(self.data.take().unwrap()))
             }
-            ExchangeResult::Disconnected =>
+            SwapResult::Disconnected =>
             // all senders are gone, no more values to recv
             {
-                self.set_state_closed(ExchangeResult::Disconnected);
+                self.set_state_closed(SwapResult::Disconnected);
                 Poll::Ready(Err(RecvError))
             }
-            ExchangeResult::TryLater =>
+            SwapResult::TryLater =>
             // sender future gone, will wait for a new one
             {
                 // keep state same like self.set_state(PeerFutureState::Exchanging);
@@ -340,7 +340,7 @@ impl<'runtime, T, ReactorT: Reactor> NextFuture<'runtime, T, ReactorT> {
                     "Channel/NextFuture: {:?} state {:?} exchange result: {:?}",
                     self.recver_rt.channel_id,
                     self.state,
-                    ExchangeResult::TryLater
+                    SwapResult::TryLater
                 );
 
                 Poll::Pending
