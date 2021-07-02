@@ -20,12 +20,73 @@ impl std::fmt::Debug for ChannelId {
     }
 }
 
-// The result of exchange<T> for send/receive future
+// The result of swap<T> for send/receive future
 #[derive(PartialEq, Debug)]
-pub(crate) enum ExchangeResult {
+pub(crate) enum SwapResult {
     Done,
     Disconnected,
     TryLater, // a new state in compare to oneshot
+}
+
+// Both sender and receiver has almost the same API which is in this trait.
+pub(crate) trait PeerRt {
+    fn pin(&self, waker: &Waker, event_id: EventId, pointer: *mut ());
+    fn unpin(&self, event_id: EventId);
+    fn close(&self);
+
+    unsafe fn swap<T>(&self) -> SwapResult;
+}
+
+// Sender API
+#[derive(Copy, Clone)]
+pub(crate) struct SenderRt<'rt> {
+    channel_rt: &'rt ChannelRt,
+    pub(crate) channel_id: ChannelId, // visible as it used for tracing
+}
+
+impl<'rt> SenderRt<'rt> {
+    pub(crate) fn inc_ref(&self) {
+        self.channel_rt.inc_sender(self.channel_id)
+    }
+}
+
+impl<'rt> PeerRt for SenderRt<'rt> {
+    fn pin(&self, waker: &Waker, event_id: EventId, pointer: *mut ()) {
+        self.channel_rt
+            .add_sender_fut(self.channel_id, waker.clone(), event_id, pointer)
+    }
+    fn unpin(&self, event_id: EventId) {
+        self.channel_rt.cancel_sender_fut(self.channel_id, event_id)
+    }
+    unsafe fn swap<T>(&self) -> SwapResult {
+        self.channel_rt.swap_sender::<T>(self.channel_id)
+    }
+    fn close(&self) {
+        self.channel_rt.dec_sender(self.channel_id)
+    }
+}
+
+// Receiver API
+#[derive(Copy, Clone)]
+pub(crate) struct RecverRt<'rt> {
+    channel_rt: &'rt ChannelRt,
+    pub(crate) channel_id: ChannelId, // visible as it used for tracing
+}
+
+impl<'rt> PeerRt for RecverRt<'rt> {
+    fn pin(&self, waker: &Waker, event_id: EventId, pointer: *mut ()) {
+        self.channel_rt
+            .reg_receiver_fut(self.channel_id, waker.clone(), event_id, pointer)
+    }
+    fn unpin(&self, _event_id: EventId) {
+        self.channel_rt.cancel_receiver_fut(self.channel_id)
+    }
+    unsafe fn swap<T>(&self) -> SwapResult {
+        self.channel_rt.swap_receiver::<T>(self.channel_id)
+    }
+    fn close(&self) {
+        self.channel_rt.close_receiver(self.channel_id)
+    }
 }
 
 // Runtime API for Channel futures
@@ -46,6 +107,20 @@ impl ChannelRt {
         self.inner.borrow_mut().create()
     }
 
+    pub(crate) fn sender_rt<'rt>(&'rt self, channel_id: ChannelId) -> SenderRt<'rt> {
+        SenderRt {
+            channel_rt: self,
+            channel_id,
+        }
+    }
+
+    pub(crate) fn recver_rt<'rt>(&'rt self, channel_id: ChannelId) -> RecverRt<'rt> {
+        RecverRt {
+            channel_rt: self,
+            channel_id,
+        }
+    }
+
     #[cfg(test)]
     fn is_exist(&self, channel_id: ChannelId) -> bool {
         self.inner.borrow().is_exist(channel_id)
@@ -55,7 +130,7 @@ impl ChannelRt {
         self.inner.borrow_mut().awake_and_get_event_id()
     }
 
-    pub(crate) fn add_sender_fut(
+    fn add_sender_fut(
         &self,
         channel_id: ChannelId,
         waker: Waker,
@@ -67,7 +142,7 @@ impl ChannelRt {
             .add_sender_fut(channel_id, waker, event_id, data);
     }
 
-    pub(crate) fn reg_receiver_fut(
+    fn reg_receiver_fut(
         &self,
         channel_id: ChannelId,
         waker: Waker,
@@ -79,33 +154,33 @@ impl ChannelRt {
             .reg_receiver_fut(channel_id, waker, event_id, data);
     }
 
-    pub(crate) unsafe fn exchange_sender<T>(&self, channel_id: ChannelId) -> ExchangeResult {
-        self.inner.borrow_mut().exchange_sender::<T>(channel_id)
+    unsafe fn swap_sender<T>(&self, channel_id: ChannelId) -> SwapResult {
+        self.inner.borrow_mut().swap_sender::<T>(channel_id)
     }
 
-    pub(crate) unsafe fn exchange_receiver<T>(&self, channel_id: ChannelId) -> ExchangeResult {
-        self.inner.borrow_mut().exchange_receiver::<T>(channel_id)
+    unsafe fn swap_receiver<T>(&self, channel_id: ChannelId) -> SwapResult {
+        self.inner.borrow_mut().swap_receiver::<T>(channel_id)
     }
 
-    pub(crate) fn inc_sender(&self, channel_id: ChannelId) {
+    fn inc_sender(&self, channel_id: ChannelId) {
         self.inner.borrow_mut().inc_sender(channel_id);
     }
 
-    pub(crate) fn dec_sender(&self, channel_id: ChannelId) {
+    fn dec_sender(&self, channel_id: ChannelId) {
         self.inner.borrow_mut().dec_sender(channel_id);
     }
 
-    pub(crate) fn close_receiver(&self, channel_id: ChannelId) {
+    fn close_receiver(&self, channel_id: ChannelId) {
         self.inner.borrow_mut().close_receiver(channel_id);
     }
 
-    pub(crate) fn cancel_sender_fut(&self, channel_id: ChannelId, event_id: EventId) {
+    fn cancel_sender_fut(&self, channel_id: ChannelId, event_id: EventId) {
         self.inner
             .borrow_mut()
             .cancel_sender_fut(channel_id, event_id);
     }
 
-    pub(crate) fn cancel_receiver_fut(&self, channel_id: ChannelId) {
+    fn cancel_receiver_fut(&self, channel_id: ChannelId) {
         self.inner.borrow_mut().cancel_receiver_fut(channel_id);
     }
 }
@@ -144,7 +219,7 @@ struct TxState {
 
 enum TxCompletion {
     Pinned(*mut ()),
-    Exchanged,
+    Emptied,
 }
 
 impl TxState {
@@ -310,10 +385,10 @@ impl ChannelNode {
     // This is the implementation for the runtime if this ChannelNode ready to produce any
     // event. It does not awake waker by itself.
     fn get_wake_event(&self) -> Option<WakeEvent> {
-        // Verify if there is a sender future that just got its data transfered to a receiver,
+        // Verify if there is a sender future that just got its data transferred to a receiver,
         // that should be awoken. It does not matter in what state the receiver is.
         if let Some(ref first_tx_state) = self.tx_queue.first() {
-            if let TxCompletion::Exchanged = first_tx_state.completion {
+            if let TxCompletion::Emptied = first_tx_state.completion {
                 return Some(WakeEvent::new(
                     Peer::Sender,
                     first_tx_state.waker.clone(),
@@ -376,7 +451,7 @@ impl ChannelNode {
         // All senders are gone and receiver is gone: None would be ok, but it probably
         // a bug, such Node should be dropped and we don't want to get event for it.
         //
-        // later: commented this out because this function sometimes in impl Debug for 
+        // later: commented this out because this function sometimes in impl Debug for
         // ChannelNode and this assert actually happens.
         //
         //debug_assert!(self.senders_alive > 0);
@@ -388,6 +463,8 @@ impl ChannelNode {
 
     // Makes the data exchange using std::mem::swap, copy data from one future into another
     // future.
+    // Unsafe: Caller should guaranty the validity of the pointers and the data type. This
+    // is achieved in public crate API by using Unpin futures.
     unsafe fn exchange_impl<T>(tx_data: *mut (), rx_data: *mut ()) {
         let tx_data = std::mem::transmute::<*mut (), *mut Option<T>>(tx_data);
         let rx_data = std::mem::transmute::<*mut (), *mut Option<T>>(rx_data);
@@ -395,8 +472,8 @@ impl ChannelNode {
     }
 
     // This is invoked by Sender future and it should be asserted that there is a
-    // sender future is Pinned with either exchanged value or not.
-    unsafe fn exchange_sender<T>(&mut self) -> ExchangeResult {
+    // sender future is Pinned with either Emptied value or not.
+    unsafe fn swap_sender<T>(&mut self) -> SwapResult {
         if let Some(first_tx_state) = self.tx_queue.first_mut() {
             match (&self.rx_state, &first_tx_state.completion) {
                 (RxState::Gone, TxCompletion::Pinned(..)) => {
@@ -407,9 +484,9 @@ impl ChannelNode {
                         "awoken sender",
                     );
                     // Receiver is gone and sender still holds the value
-                    ExchangeResult::Disconnected
+                    SwapResult::Disconnected
                 }
-                (_, TxCompletion::Exchanged) => {
+                (_, TxCompletion::Emptied) => {
                     self.traced(
                         |node| {
                             node.tx_queue.remove(0);
@@ -418,17 +495,17 @@ impl ChannelNode {
                     );
                     // This is a typical good exhange scenario that receiver has moved
                     // the value out of sender storage and replanced it with None.
-                    ExchangeResult::Done
+                    SwapResult::Done
                 }
                 (_, _) => {
                     panic!(
-                        "ChannelRt: {:?} exchange_sender unexpected state: {:?}",
+                        "ChannelRt: {:?} swap_sender unexpected state: {:?}",
                         self.id, self
                     );
                 }
             }
         } else {
-            // do not invoke exchange_sender() when sender does not have a future pinned
+            // do not invoke swap_sender() when sender does not have a future pinned
             panic!(
                 "ChannelRt: {:?} exhange_sender with no sender: {:?}",
                 self.id, self
@@ -438,10 +515,10 @@ impl ChannelNode {
 
     // This is invoked by Receiver future and the precondition that receiver future has
     // pinned.
-    unsafe fn exchange_receiver<T>(&mut self) -> ExchangeResult {
+    unsafe fn swap_receiver<T>(&mut self) -> SwapResult {
         if let Some(first_tx_state) = self.tx_queue.first_mut() {
             // Just do the actual data exchange between receiver and first sender in queue.
-            // It can happen that between we awake the receiver and it invokes exchange_receiver()
+            // It can happen that between we awake the receiver and it invokes swap_receiver()
             // there are one more future removed from tx_queue, but it does not matter, the
             // exchange with first sender is ok.
             match (&self.rx_state, &first_tx_state.completion) {
@@ -450,43 +527,64 @@ impl ChannelNode {
                     self.traced(
                         move |node| {
                             node.rx_state = RxState::Idle;
-                            node.tx_queue[0].completion = TxCompletion::Exchanged;
+                            node.tx_queue[0].completion = TxCompletion::Emptied;
                         },
                         "mem::swapped",
                     );
-                    ExchangeResult::Done
+                    SwapResult::Done
                 }
                 // other state are not legal and should be asserted by Channel Futures:
                 //    * Receiver: it must not call exhange_receiver() if not in Pinned state
-                //    * Sender: there should be no way exchange_receiver() is invoked while
+                //    * Sender: there should be no way swap_receiver() is invoked while
                 //              sender is in Exhanged state.
-                _ => panic!("ChannelRt: exchange_receiver unexpected {:?}", self),
+                _ => panic!("ChannelRt: swap_receiver unexpected {:?}", self),
             }
         } else {
             // There is no sender future
             if self.senders_alive == 0 {
                 // The receiver might awoken because there is no senders anymore, so
                 // the sender's end of the channel is Disconnected.
-                ExchangeResult::Disconnected
+                SwapResult::Disconnected
             } else {
                 // It looks like the sender future was dropped after Receiver future is awoken.
                 // Receiver can be awoken later.
-                ExchangeResult::TryLater
+                SwapResult::TryLater
             }
         }
     }
 }
 
+// Textual form of the ChannelNode that is helpful for testing and development.
+//
 // Produce a state like "(@Pin <- [Pin+7]:3)"
-//                        ^ ^       ^  ^   ^-senders alive
-//                        | |       |  +-----how many sender futures registered
+//                        ^ ^       ^  ^  ^--# of senders alive
+//                        | |       |  +-----how many sender futures has been pinned total
 //                        | |       +--------state of the first sender (pinned, exhanged)
 //                        | +----------------state of the receiver
 //                        +------------------'@' indicates a future to be awoken in this state
+//
+// Receivers states are:
+//     * 'Idle' - when receiver side is alive but did not provide pointer for swap
+//     * 'Pin' - means that receiver provided pointer for swap
+//     * 'Gone' - means that receiver's side of the channel is dropped
+//
+// Senders states are:
+//     * 'Pin' - means sender has provided pointer for swap
+//     * 'Empt' - means that receiver has taken data from sender
+//
+// Senders are organized as a queue, the only top sender can be 'Empt', other senders in
+// queue are always 'Pin'. If 'Pin' sender in the middle of queue is closed, it just removed
+// from queue without receiver knowing about that.
+//
+// When the number of senders is 0, this is just like Gone for receiver that there are no
+// more sender and channel looks disconnected on Receiver side.
+//
+// When recv is Gone and # of senders is 0 - channel closed.
 impl std::fmt::Debug for ChannelNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // "@" 
-        let (rx_event_tag, tx_event_tag) = self.get_wake_event()
+        // "@"
+        let (rx_event_tag, tx_event_tag) =
+            self.get_wake_event()
                 .map_or(("", ""), |wake_event| match wake_event.peer {
                     Peer::Sender => ("", "@"),
                     Peer::Receiver => ("@", ""),
@@ -504,13 +602,12 @@ impl std::fmt::Debug for ChannelNode {
         let tx_len = self.tx_queue.len();
 
         if tx_len > 0 {
-
             f.write_str("[")?;
             f.write_str(tx_event_tag)?;
 
             match self.tx_queue[0].completion {
                 TxCompletion::Pinned(..) => f.write_str("Pin"),
-                TxCompletion::Exchanged => f.write_str("Exch"),
+                TxCompletion::Emptied => f.write_str("Empt"),
             }?;
 
             if tx_len > 1 {
@@ -528,7 +625,23 @@ impl std::fmt::Debug for ChannelNode {
     }
 }
 
+// Actual implementation of internal Channel API with functions that do have &mut self.
 struct InnerChannelRt {
+    // Improvement ideas:
+    //
+    // There are various ideas how we can improve containers for channels in order to 
+    // avoid dynamic memory usages:
+    //     * fixed size table
+    //     * as the future is pinned, we can have some kind of 'intrusive list'
+    //     * it can be the caller that provides store the channel node like
+    //       let channel: Pin<&mut ChannelNode> = ...
+    //
+    // Another improvement idea that currently executor has to scan all channel objects
+    // to verify if there is an event. Whenever there is a channel node that goes into 
+    // the state that produces awake event, it can be stored somewhere in a queue.
+    // The queue can be also made by an intrusive list.
+    //
+    // These ideas seems to require preparing the benching.
     nodes: Vec<ChannelNode>,
     last_id: u32,
 }
@@ -552,20 +665,23 @@ impl InnerChannelRt {
     fn is_exist(&self, channel_id: ChannelId) -> bool {
         self.nodes
             .iter()
-            .find(|node| node.id == channel_id).is_some()
+            .find(|node| node.id == channel_id)
+            .is_some()
     }
 
+    // Returns mutable reference to node
     fn get_node_mut(&mut self, channel_id: ChannelId) -> &mut ChannelNode {
         self.nodes
             .iter_mut()
             .find(|node| node.id == channel_id)
-            .unwrap()
+            .unwrap() // panics if channel_id is not found
     }
+
     fn get_node(&mut self, channel_id: ChannelId) -> &ChannelNode {
         self.nodes
             .iter()
             .find(|node| node.id == channel_id)
-            .unwrap()
+            .unwrap() // panics if channel_id is not found
     }
 
     fn add_sender_fut(
@@ -591,19 +707,19 @@ impl InnerChannelRt {
     }
 
     // This is invoked by Sender future and it should be asserted that there is a
-    // sender future is Registered with either exchanged value or not.
+    // sender future has pointer pinned with either Emptied value or not.
     //
     // Panics if channel_id is not found and if channel id is inconsistent state.
-    unsafe fn exchange_sender<T>(&mut self, channel_id: ChannelId) -> ExchangeResult {
-        self.get_node_mut(channel_id).exchange_sender::<T>()
+    unsafe fn swap_sender<T>(&mut self, channel_id: ChannelId) -> SwapResult {
+        self.get_node_mut(channel_id).swap_sender::<T>()
     }
 
     // This is invoked by Receiver future and the precondition that receiver future has
     // registered.
     //
     // Panics if channel_id is not found and if channel id is inconsistent state.
-    unsafe fn exchange_receiver<T>(&mut self, channel_id: ChannelId) -> ExchangeResult {
-        self.get_node_mut(channel_id).exchange_receiver::<T>()
+    unsafe fn swap_receiver<T>(&mut self, channel_id: ChannelId) -> SwapResult {
+        self.get_node_mut(channel_id).swap_receiver::<T>()
     }
 
     // Awakes the waker and returns its EventId
@@ -658,9 +774,8 @@ mod tests {
     // API tests here. These tests below helped me to develop the InnerChannelRt.
     use super::*;
 
-    // This creates Waker that can be used for testing Channel Runtime API. This 
-    // waker is kind of fake it will not awake anything, but we need one for channel peers 
-    // registration.
+    // This creates std::task::Waker that can be used for testing Channel Runtime API. This
+    // waker is kind of fake it will not awake anything, but good enough for testing.
     fn create_fake_waker(ptr: *const ()) -> std::task::Waker {
         use std::task::{RawWaker, RawWakerVTable};
         // Cloning the waker returns just the copy of the pointer.
@@ -690,137 +805,87 @@ mod tests {
         unsafe { Waker::from_raw(raw_waker) }
     }
 
-    // This is a test sender
-    struct RecverEmu<'rt> {
-        crt: &'rt ChannelRt,
-        channel_id: ChannelId,
+    // Unified code for SenderEmu and RecverEmu
+    struct PeerEmu<PeerT: PeerRt> {
+        peer_rt: PeerT,
         event_id: EventId,
         waker: Waker,
         ptr: *mut (),
     }
 
-    impl<'rt> RecverEmu<'rt> {
-        fn new(crt: &'rt ChannelRt, channel_id: ChannelId, storage: &mut Option<u32>) -> Self {
-            let ptr = storage as *mut Option<u32> as *mut ();
-            Self {
-                crt,
-                channel_id,
-                event_id: EventId(ptr),
-                waker: create_fake_waker(ptr),
-                ptr,
-            }
+    // Sender and Reciever helper structs for API tests.
+    type SenderEmu<'rt> = PeerEmu<SenderRt<'rt>>;
+    type RecverEmu<'rt> = PeerEmu<RecverRt<'rt>>;
+
+    // Most of the code for sender and receiver are the same when using PeerRt trait
+    impl<PeerT: PeerRt> PeerEmu<PeerT> {
+        fn register(&self) {
+            self.peer_rt.pin(&self.waker, self.event_id, self.ptr);
         }
 
-        fn register(&self) {
-            self.crt
-                .reg_receiver_fut(self.channel_id, self.waker.clone(), self.event_id, self.ptr);
+        fn cancel(&self) {
+            self.peer_rt.unpin(self.event_id);
         }
 
         fn assert_event(&self, event_id: Option<EventId>) {
             assert_eq!(self.event_id, event_id.expect("Event is expected"));
         }
 
-        /*
-        fn cancel(&self) {
-            self.crt.cancel_receiver_fut(self.channel_id);
-        }
-        */
-
         unsafe fn assert_value(&self, rhs: &Option<u32>) {
             assert_eq!(*(self.ptr as *const Option<u32>), *rhs);
+        }
+
+        unsafe fn exchange(&self, expected: SwapResult) {
+            assert_eq!(self.peer_rt.swap::<Option<u32>>(), expected);
+        }
+
+        unsafe fn assert_completion(
+            &self,
+            event_id: Option<EventId>,
+            exch_result: SwapResult,
+            value: &Option<u32>,
+        ) {
+            self.assert_event(event_id);
+            self.exchange(exch_result);
+            self.assert_value(value);
+        }
+    }
+
+    // SenderEmu specific code: also has the inc_sender() for reference counting
+    impl<'rt> PeerEmu<SenderRt<'rt>> {
+        fn new(crt: &'rt ChannelRt, channel_id: ChannelId, storage: &mut Option<u32>) -> Self {
+            let ptr = storage as *mut Option<u32> as *mut ();
+            crt.inc_sender(channel_id);
+            Self {
+                peer_rt: crt.sender_rt(channel_id),
+                event_id: EventId(ptr),
+                waker: create_fake_waker(ptr),
+                ptr,
+            }
+        }
+    }
+
+    // RecverEmu specific code: also includes the clear storage for testing
+    impl<'rt> PeerEmu<RecverRt<'rt>> {
+        fn new(crt: &'rt ChannelRt, channel_id: ChannelId, storage: &mut Option<u32>) -> Self {
+            let ptr = storage as *mut Option<u32> as *mut ();
+            Self {
+                peer_rt: crt.recver_rt(channel_id),
+                event_id: EventId(ptr),
+                waker: create_fake_waker(ptr),
+                ptr,
+            }
         }
 
         // Clear the receiver's value to be able to repeat
         unsafe fn clear_storage(&mut self) {
             (*(self.ptr as *mut Option<u32>)) = None;
         }
-
-        unsafe fn exchange(&self, expected: ExchangeResult) {
-            assert_eq!(
-                self.crt.exchange_receiver::<Option<u32>>(self.channel_id),
-                expected
-            );
-        }
-
-        unsafe fn assert_completion(
-            &mut self,
-            event_id: Option<EventId>,
-            exch_result: ExchangeResult,
-            value: &Option<u32>,
-        ) {
-            self.assert_event(event_id);
-            self.exchange(exch_result);
-            self.assert_value(value);
-        }
     }
 
-    impl<'rt> Drop for RecverEmu<'rt> {
+    impl<PeerT: PeerRt> Drop for PeerEmu<PeerT> {
         fn drop(&mut self) {
-            self.crt.close_receiver(self.channel_id);
-        }
-    }
-
-    // This is a test sender
-    struct SenderEmu<'rt> {
-        crt: &'rt ChannelRt,
-        channel_id: ChannelId,
-        event_id: EventId,
-        waker: Waker,
-        ptr: *mut (),
-    }
-
-    impl<'rt> SenderEmu<'rt> {
-        fn new(crt: &'rt ChannelRt, channel_id: ChannelId, storage: &mut Option<u32>) -> Self {
-            let ptr = storage as *mut Option<u32> as *mut ();
-            crt.inc_sender(channel_id);
-            Self {
-                crt,
-                channel_id,
-                event_id: EventId(ptr),
-                waker: create_fake_waker(ptr),
-                ptr,
-            }
-        }
-
-        fn register(&self) {
-            self.crt
-                .add_sender_fut(self.channel_id, self.waker.clone(), self.event_id, self.ptr);
-        }
-
-        fn assert_event(&self, event_id: Option<EventId>) {
-            assert_eq!(self.event_id, event_id.expect("Event is expected"));
-        }
-
-        fn cancel(&self) {
-            self.crt.cancel_sender_fut(self.channel_id, self.event_id);
-        }
-
-        unsafe fn exchange(&self, expected: ExchangeResult) {
-            assert_eq!(
-                self.crt.exchange_sender::<Option<u32>>(self.channel_id),
-                expected
-            );
-        }
-
-        unsafe fn assert_value(&self, rhs: &Option<u32>) {
-            assert_eq!(*(self.ptr as *mut Option<u32>), *rhs);
-        }
-
-        unsafe fn assert_completion(
-            &self,
-            event_id: Option<EventId>,
-            exch_result: ExchangeResult,
-            value: &Option<u32>,
-        ) {
-            self.assert_event(event_id);
-            self.exchange(exch_result);
-            self.assert_value(value);
-        }
-    }
-
-    impl<'rt> Drop for SenderEmu<'rt> {
-        fn drop(&mut self) {
-            self.crt.dec_sender(self.channel_id);
+            self.peer_rt.close();
         }
     }
 
@@ -842,7 +907,7 @@ mod tests {
         assert!(!crt.is_exist(channel_id));
     }
 
-    /// Verifies that sender and receiver has value changed after being pinned and 
+    /// Verifies that sender and receiver has value changed after being pinned and
     /// invoking exchange().
     #[test]
     fn api_test_peers_pinned_gives_value_exchanged() {
@@ -865,15 +930,11 @@ mod tests {
 
         unsafe {
             // receiver awoken and have got the right value after exchange
-            recver.assert_completion(
-                crt.awake_and_get_event_id(),
-                ExchangeResult::Done,
-                &Some(100),
-            );
+            recver.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &Some(100));
             recver.clear_storage();
 
             // verifies that sender is awoken and had value taken out after exchange
-            sender.assert_completion(crt.awake_and_get_event_id(), ExchangeResult::Done, &None);
+            sender.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &None);
         }
 
         drop(sender);
@@ -913,7 +974,7 @@ mod tests {
             // still on senders side.
             sender.assert_completion(
                 crt.awake_and_get_event_id(),
-                ExchangeResult::Disconnected,
+                SwapResult::Disconnected,
                 &Some(100),
             );
         }
@@ -949,32 +1010,24 @@ mod tests {
 
         unsafe {
             // receiver awoken and have got the right value after exchange
-            recver.assert_completion(
-                crt.awake_and_get_event_id(),
-                ExchangeResult::Done,
-                &Some(100),
-            );
+            recver.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &Some(100));
             recver.clear_storage();
 
             // verifies that sender is awoken and had value taken out after exchange
-            sender1.assert_completion(crt.awake_and_get_event_id(), ExchangeResult::Done, &None);
+            sender1.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &None);
 
             // prepare sender once again
             recver.register();
 
             // receiver awoken and have got the right value after exchange
-            recver.assert_completion(
-                crt.awake_and_get_event_id(),
-                ExchangeResult::Done,
-                &Some(50),
-            );
+            recver.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &Some(50));
 
             // verifies that sender is awoken and had value taken out after exchange
-            sender2.assert_completion(crt.awake_and_get_event_id(), ExchangeResult::Done, &None);
+            sender2.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &None);
         }
     }
 
-    /// If we cancel pinned/exchanged sender the receiver is ok and can receive further
+    /// If we cancel pinned/Emptied sender the receiver is ok and can receive further
     /// values from senders.
     #[test]
     fn api_test_cancel_exchanged_sender_does_not_affect_receiver() {
@@ -1001,11 +1054,7 @@ mod tests {
 
         unsafe {
             // receiver awoken and have got the right value after exchange
-            recver.assert_completion(
-                crt.awake_and_get_event_id(),
-                ExchangeResult::Done,
-                &Some(100),
-            );
+            recver.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &Some(100));
             recver.clear_storage();
 
             sender1.cancel();
@@ -1015,14 +1064,10 @@ mod tests {
             recver.register();
 
             // receiver awoken and have got the right value after exchange
-            recver.assert_completion(
-                crt.awake_and_get_event_id(),
-                ExchangeResult::Done,
-                &Some(50),
-            );
+            recver.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &Some(50));
 
             // verifies that sender is awoken and had value taken out after exchange
-            sender2.assert_completion(crt.awake_and_get_event_id(), ExchangeResult::Done, &None);
+            sender2.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &None);
         }
     }
 
@@ -1052,11 +1097,7 @@ mod tests {
 
         unsafe {
             // receiver awoken and have got the right value after exchange
-            recver.assert_completion(
-                crt.awake_and_get_event_id(),
-                ExchangeResult::Done,
-                &Some(100),
-            );
+            recver.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &Some(100));
             recver.clear_storage();
 
             // cancel and drop the queued sender [Exch, Pin <- this one]
@@ -1064,7 +1105,7 @@ mod tests {
             drop(sender2);
 
             // verifies that sender is awoken and had value taken out after exchange
-            sender1.assert_completion(crt.awake_and_get_event_id(), ExchangeResult::Done, &None);
+            sender1.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &None);
         }
     }
 }
