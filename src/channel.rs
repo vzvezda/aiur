@@ -14,7 +14,16 @@ use crate::runtime::Runtime;
 // enable/disable output of modtrace! macro
 const MODTRACE: bool = true;
 
-/// Creates a bounded channel and returns ther pair of (sender, receiver).
+/// Creates a new asynchrounous channel returning the pair of (Sender, Receiver). This is 
+/// bounded channel, so whenever senders sends a data it is suspended in await point until 
+/// either receiver had the data received or channel got disconnected.
+///
+/// Sender can be cloned to send data to the same channel, but only one Receiver is supported.
+/// 
+/// While there is a channel half that awaits transmittion and another half is gone,
+/// operation Result would be an error. In a case of the receiver it would be RecvError. When
+/// sender detects that receiver is gone the error contains the value sender was supposed 
+/// to send.
 pub fn channel<'runtime, T, ReactorT: Reactor>(
     rt: &'runtime Runtime<ReactorT>,
 ) -> (Sender<'runtime, T, ReactorT>, Recver<'runtime, T, ReactorT>) {
@@ -25,11 +34,13 @@ pub fn channel<'runtime, T, ReactorT: Reactor>(
 }
 
 /// Error type returned by Receiver: the only possible error is channel closed on sender's side.
-#[derive(Debug)] // Debug required for Result.unwrap()
+#[derive(Debug)] // Debug is required for Result.unwrap()
 pub struct RecvError;
 
 // -----------------------------------------------------------------------------------------------
-// Sender's side of the channel
+/// The sending half of the channel.
+///
+/// Messages can be sent through this channel with send.
 pub struct Sender<'runtime, T, ReactorT: Reactor> {
     rt: &'runtime Runtime<ReactorT>,
     sender_rt: SenderRt<'runtime>,
