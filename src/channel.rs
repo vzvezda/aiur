@@ -14,13 +14,14 @@ use crate::runtime::Runtime;
 // enable/disable output of modtrace! macro
 const MODTRACE: bool = true;
 
-/// Creates a new asynchrounous channel returning the pair of (Sender, Receiver). This is 
-/// bounded channel, so whenever senders sends a data it is suspended in await point until 
-/// either receiver had the data received or channel got disconnected.
+/// Creates a new asynchronous channel returning the pair of (Sender, Receiver). 
+///
+/// This creates the bounded channel, so whenever a sender sends a data it is suspended 
+/// in await point until either receiver had the data received or channel got disconnected.
 ///
 /// Sender can be cloned to send data to the same channel, but only one Receiver is supported.
 /// 
-/// While there is a channel half that awaits transmittion and another half is gone,
+/// While there is a channel half that awaits transmission and another half is gone,
 /// operation Result would be an error. In a case of the receiver it would be RecvError. When
 /// sender detects that receiver is gone the error contains the value sender was supposed 
 /// to send.
@@ -40,7 +41,7 @@ pub struct RecvError;
 // -----------------------------------------------------------------------------------------------
 /// The sending half of the channel.
 ///
-/// Messages can be sent through this channel with send.
+/// Messages can be sent through this channel with [Sender::send()].
 pub struct Sender<'runtime, T, ReactorT: Reactor> {
     rt: &'runtime Runtime<ReactorT>,
     sender_rt: SenderRt<'runtime>,
@@ -57,6 +58,11 @@ impl<'runtime, T, ReactorT: Reactor> Sender<'runtime, T, ReactorT> {
         }
     }
 
+    /// Sends a value to a receiver half of communication channel. 
+    ///
+    /// The awaited send() operation does not return until receiver gets the data or 
+    /// communication channel is gone by having receiver object dropped. In a case of 
+    /// closed channel sender receives the value back.
     pub async fn send(&mut self, value: T) -> Result<(), T> {
         SenderFuture::new(self.rt, self.sender_rt, value).await
     }
@@ -83,7 +89,9 @@ impl<'runtime, T, ReactorT: Reactor> Drop for Sender<'runtime, T, ReactorT> {
 }
 
 // -----------------------------------------------------------------------------------------------
-// Receiver's end of the channel
+/// The receiving half of the channel.
+///
+/// Messages from sender can be awaited and received with [Recver::next()].
 pub struct Recver<'runtime, T, ReactorT: Reactor> {
     rt: &'runtime Runtime<ReactorT>,
     recver_rt: RecverRt<'runtime>,
@@ -99,6 +107,8 @@ impl<'runtime, T, ReactorT: Reactor> Recver<'runtime, T, ReactorT> {
         }
     }
 
+    /// Reads a next value from channel sent by sender half. Error is returned when all 
+    /// senders are gone, so no values can be received anymore.
     pub async fn next(&mut self) -> Result<T, RecvError> {
         NextFuture::new(self.rt, self.recver_rt).await
     }
@@ -266,6 +276,7 @@ impl<'runtime, T, ReactorT: Reactor> Drop for SenderFuture<'runtime, T, ReactorT
 //
 // Receiver's NextFuture has a lot of copy paste with SenderFuture, but unification
 // produced more code and less clarity.
+//
 pub struct NextFuture<'runtime, T, ReactorT: Reactor> {
     rt: &'runtime Runtime<ReactorT>,
     recver_rt: RecverRt<'runtime>,

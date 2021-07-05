@@ -9,6 +9,10 @@ use crate::task::ITask;
 // enable/disable output of modtrace! macro
 const MODTRACE: bool = true;
 
+/// Scope is API to spawn tasks in aiur. 
+///
+/// Experimental and unsound at this moment. The idea is that whenever the scope is dropped,
+/// all tasks it had spawn dropped as well.
 pub struct Scope<'runtime, ReactorT> where ReactorT: Reactor {
     rt: &'runtime Runtime<ReactorT>,
     tasks: std::cell::RefCell<Vec<*mut (dyn ITask + 'runtime)>>,
@@ -29,10 +33,12 @@ pub struct JoinHandle<'scope, 'runtime, ReactorT> where ReactorT: Reactor {
 */
 
 impl<'runtime, ReactorT> Scope<'runtime, ReactorT> where ReactorT: Reactor {
+    /// Creates a new scope.
     pub fn new(rt: &'runtime Runtime<ReactorT>) -> Self {
         Self::new_named(rt, "")
     }
 
+    /// Creates a new scope with name (used for tracing).
     pub fn new_named<'name>(rt: &'runtime Runtime<ReactorT>, name: &'name str) -> Self {
         Scope {
             rt,
@@ -45,6 +51,7 @@ impl<'runtime, ReactorT> Scope<'runtime, ReactorT> where ReactorT: Reactor {
     // Does it make sense to use RefCell and not mut ref? The cope is used for channels,
     // but perhaps we can use runtime for channels.\
     // But haven't we had a plan to have a Pin<&mut self>?
+    /// Schedules a feature to start as new task.
     pub fn spawn<'scope, FutureT>(&'scope /*mut */self, future: FutureT) 
     where
         FutureT: std::future::Future<Output = ()> + 'runtime,
