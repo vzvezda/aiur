@@ -15,9 +15,15 @@ use crate::runtime::Runtime;
 const MODTRACE: bool = true;
 
 // -----------------------------------------------------------------------------------------------
-// Public oneshot()
+// Public oneshot() API
 
-/// Creates a new oneshot channel and returns ther pair of (sender, receiver).
+/// Creates a new oneshot channel and returns the pair of (sender, receiver). 
+///
+/// The created channel is bounded, whenever a sender sends a data it is suspended in await 
+/// point until either receiver had the data received or oneshot channel got disconnected.
+///
+/// Neither sender nor receiver can be cloned, it is single use, single producer, single consumer
+/// communication channel.
 pub fn oneshot<'runtime, T, ReactorT: Reactor>(
     rt: &'runtime Runtime<ReactorT>,
 ) -> (
@@ -31,7 +37,8 @@ pub fn oneshot<'runtime, T, ReactorT: Reactor>(
     )
 }
 
-/// Error type returned by Receiver: the only possible error is channel closed on sender's side.
+/// Error type returned by Receiver: the only possible error is oneshot channel closed 
+/// on sender's side.
 #[derive(Debug)] // Debug required for Result.unwrap()
 pub struct RecvError;
 
@@ -77,7 +84,7 @@ impl<'runtime, ReactorT: Reactor> RuntimeOneshot<'runtime, ReactorT> {
 }
 
 // -----------------------------------------------------------------------------------------------
-// Sender's end of the oneshot
+/// The sending half of the oneshot channel.
 pub struct SenderOnce<'runtime, T, ReactorT: Reactor> {
     inner: SenderInner<'runtime, T, ReactorT>, // use inner to hide enum internals
 }
@@ -218,6 +225,11 @@ impl<'runtime, T, ReactorT: Reactor> Drop for SenderFuture<'runtime, T, ReactorT
 //
 // Receiver has a lot of copy paste with SenderFuture, but unification produced more code and
 // less clarity.
+//
+/// The receiving half of the oneshot channel.
+///
+/// It implements the [std::future::Future], so app code just awaits on this object to receive 
+/// the value from sender.
 pub struct RecverOnce<'runtime, T, ReactorT: Reactor> {
     runtime_channel: RuntimeOneshot<'runtime, ReactorT>,
     state: PeerFutureState,

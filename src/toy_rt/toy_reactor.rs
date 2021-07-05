@@ -12,16 +12,18 @@ use crate::EventId;
 use crate::Reactor;
 use crate::TemporalReactor;
 
-// ToyReactor comes with a init parameter called SleepMode. To improve development and testing
-// cycles sleep can work in Emulated mode when it does not actually sleep.
+/// ToyReactor comes with a init parameter called SleepMode. To improve development and testing
+/// cycles sleep can work in Emulated mode when it does not actually sleep.
 #[derive(Copy, Clone)]
 pub enum SleepMode {
     Actual,   // Makes actual delays, e.g. sleep(5s) seconds actually waits 5 sec before wake
     Emulated, // Does not wait, shoot timer right away in a relative sorted order
 }
 
-// ToyReactor is reactor with timers. This reactor uses u32 for timers, so it is not really
-// ready for production.
+/// ToyReactor is reactor that can only schedule timers.
+///
+/// It is used for testing the executor as a lot of I/O can be emulated just by sleeping 
+/// (by pretending that we are reading something from network).
 pub struct ToyReactor {
     // Reactor is a part of Runtime which is only allowed to work as non-unique ref, so
     // we have to make it with interior mutability.
@@ -34,19 +36,21 @@ pub struct ToyReactor {
 // The impl of reactor is more about forwarding to a method with &mut self.
 // Toy reactor expired in 49 days and you have to re-launch it.
 impl ToyReactor {
+    /// Creates ToyReactor with actual sleep mode that would invoke [std::thread::sleep]().
     pub fn new() -> Self {
         Self::new_with_mode(SleepMode::Actual)
     }
 
+    /// Creates ToyReactor with sleep mode provided as a parameter.
     pub fn new_with_mode(mode: SleepMode) -> Self {
         ToyReactor {
             rimpl: RefCell::new(ToyReactorImpl::new(mode)),
         }
     }
 
-    // Returns a monotonically increasing current time in milliseconds. It can be used
-    // for testing to verify if the time of sleep() actually passes. In emulated sleep
-    // mode the value this function returns is also emulated.
+    /// Returns a monotonically increasing current time in milliseconds. It can be used
+    /// for testing to verify if the time of sleep() actually passes. In emulated sleep
+    /// mode the value this function returns is also emulated.
     pub fn now32(&self) -> u32 {
         self.rimpl.borrow_mut().now32()
     }

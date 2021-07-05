@@ -87,8 +87,7 @@ impl TaskMaster {
     }
 }
 
-//
-//
+/// The owner of the reactor (I/O event queue) and executor (task management) data structures.
 pub struct Runtime<ReactorT> {
     reactor: ReactorT,
     awoken: Awoken,
@@ -280,6 +279,7 @@ where
         self.awoken.event_id.get() == event_id
     }
 
+    /// Returns reference to reactor.
     pub fn io(&self) -> &ReactorT {
         &self.reactor
     }
