@@ -23,22 +23,22 @@ pub async fn sleep<ReactorT: TemporalReactor>(rt: &Runtime<ReactorT>, duration: 
     TimerFuture::new(rt, duration).await
 }
 
-// This is the possible states for the timer
+// Possible states for the timer future.
 enum TimerState {
     Created { duration: Duration },
     Scheduled,
     Done,
 }
 
-//
+// Leaf future for timer.
 struct TimerFuture<'runtime, ReactorT: TemporalReactor> {
     rt: &'runtime Runtime<ReactorT>,
     state: TimerState,
-    _pin: PhantomPinned,
+    _pin: PhantomPinned, // making safe to use GetEventId
 }
 
-impl<'a, ReactorT: TemporalReactor> TimerFuture<'a, ReactorT> {
-    fn new(rt: &'a Runtime<ReactorT>, duration: Duration) -> Self {
+impl<'rt, ReactorT: TemporalReactor> TimerFuture<'rt, ReactorT> {
+    fn new(rt: &'rt Runtime<ReactorT>, duration: Duration) -> Self {
         TimerFuture {
             rt,
             state: TimerState::Created { duration },
@@ -46,7 +46,7 @@ impl<'a, ReactorT: TemporalReactor> TimerFuture<'a, ReactorT> {
         }
     }
 
-    // Schedule the timer in the reactor
+    // Schedules the timer in the reactor.
     fn schedule(&mut self, waker: Waker, event_id: EventId, duration: Duration) -> Poll<()> {
         // Timer in has to be in "Created" state, so we cannot schedule the timer twice.
         debug_assert!(matches!(self.state, TimerState::Created { .. }));
@@ -88,7 +88,6 @@ impl<'rt, ReactorT: TemporalReactor> Drop for TimerFuture<'rt, ReactorT> {
     }
 }
 
-//
 impl<'rt, ReactorT: TemporalReactor> Future for TimerFuture<'rt, ReactorT> {
     type Output = ();
 
