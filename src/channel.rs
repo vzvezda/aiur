@@ -39,7 +39,7 @@ pub fn channel<'runtime, T, ReactorT: Reactor>(
 pub struct RecvError;
 
 // -----------------------------------------------------------------------------------------------
-/// The sending half of the channel.
+/// The sending half of the channel created by [channel()] function.
 ///
 /// Messages can be sent through this channel with [Sender::send()].
 pub struct Sender<'runtime, T, ReactorT: Reactor> {
@@ -89,7 +89,7 @@ impl<'runtime, T, ReactorT: Reactor> Drop for Sender<'runtime, T, ReactorT> {
 }
 
 // -----------------------------------------------------------------------------------------------
-/// The receiving half of the channel.
+/// The receiving half of the channel created by [channel()] function.
 ///
 /// Messages from sender can be awaited and received with [Recver::next()].
 pub struct Recver<'runtime, T, ReactorT: Reactor> {

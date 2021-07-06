@@ -13,8 +13,9 @@ use crate::Runtime;
 //
 //       async fn my_main<'b>(rt: &Runtime, init: &'b u32) -> &'b u32 { todo!() }
 
-// A helper trait to solve the lifetime problem for with_runtime().
-// See https://stackoverflow.com/questions/63517250/specify-rust-closures-lifetime
+/// A helper trait to solve the lifetime problem for with_runtime().
+///
+/// See <https://stackoverflow.com/questions/63517250/specify-rust-closures-lifetime>
 pub trait LifetimeLinkerFn<'runtime, ReactorT, InitT, ResT> {
     type OutputFuture: Future<Output = ResT>; // +'runtime; commented because [1]
 
@@ -38,8 +39,18 @@ where
     }
 }
 
-// This is how you start a async function with aiur. The idea that reactor crate wrap this method
-// into another one.
+/// This is how you run an async function with aiur.
+///
+/// This function creates [Runtime] and executes the provided async function until completion
+/// providing the reference to to runtime in parameter. It is similar to block_on() function
+/// of other executors.
+///
+/// It is supposed that reactor crate make its own with_runtime() function that would be
+/// convenient for runtime users.
+///
+/// By default with_runtime() specialized with reactor type is created by export_runtime!(),
+/// but this is up to reactor crate to do more, for example [toy_rt::with_runtime_in_mode]()
+/// function that also accept additional parameter for reactor.
 pub fn with_runtime_base<ReactorT, FuncT, InitT, ResT>(
     reactor: ReactorT,
     async_function: FuncT,

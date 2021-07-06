@@ -3,16 +3,22 @@
 // |' | '|   (c) 2020 - present, Vladimir Zvezda
 //   / \
 use std::future::Future;
+use std::marker::PhantomPinned;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use crate::EventId;
 use crate::GetEventId;
-use crate::TemporalReactor;
 use crate::Runtime;
+use crate::TemporalReactor;
 
-/// 
+/// Performs async sleep.
+///
+/// This function requires reactor with timer operations implemented according to
+/// [TemporalReactor] trait. Sleeping used intensively in tests of this crate.
+///
+/// Panics if provided duration exceeds the maximum value (MAX_TIMER_DURATION_MS)
 pub async fn sleep<ReactorT: TemporalReactor>(rt: &Runtime<ReactorT>, duration: Duration) {
     TimerFuture::new(rt, duration).await
 }
@@ -24,10 +30,11 @@ enum TimerState {
     Done,
 }
 
-// 
+//
 struct TimerFuture<'runtime, ReactorT: TemporalReactor> {
     rt: &'runtime Runtime<ReactorT>,
     state: TimerState,
+    _pin: PhantomPinned,
 }
 
 impl<'a, ReactorT: TemporalReactor> TimerFuture<'a, ReactorT> {
@@ -35,6 +42,7 @@ impl<'a, ReactorT: TemporalReactor> TimerFuture<'a, ReactorT> {
         TimerFuture {
             rt,
             state: TimerState::Created { duration },
+            _pin: PhantomPinned,
         }
     }
 
@@ -80,7 +88,7 @@ impl<'rt, ReactorT: TemporalReactor> Drop for TimerFuture<'rt, ReactorT> {
     }
 }
 
-// 
+//
 impl<'rt, ReactorT: TemporalReactor> Future for TimerFuture<'rt, ReactorT> {
     type Output = ();
 

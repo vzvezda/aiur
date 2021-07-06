@@ -84,7 +84,7 @@ impl<'runtime, ReactorT: Reactor> RuntimeOneshot<'runtime, ReactorT> {
 }
 
 // -----------------------------------------------------------------------------------------------
-/// The sending half of the oneshot channel.
+/// The sending half of the oneshot channel created by [oneshot()] function.
 pub struct SenderOnce<'runtime, T, ReactorT: Reactor> {
     inner: SenderInner<'runtime, T, ReactorT>, // use inner to hide enum internals
 }
@@ -226,7 +226,7 @@ impl<'runtime, T, ReactorT: Reactor> Drop for SenderFuture<'runtime, T, ReactorT
 // Receiver has a lot of copy paste with SenderFuture, but unification produced more code and
 // less clarity.
 //
-/// The receiving half of the oneshot channel.
+/// The receiving half of the oneshot channel created by [oneshot()] function.
 ///
 /// It implements the [std::future::Future], so app code just awaits on this object to receive 
 /// the value from sender.
