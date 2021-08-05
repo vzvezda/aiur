@@ -235,7 +235,7 @@ impl<'runtime, T, ReactorT: Reactor> Future for SenderFuture<'runtime, T, Reacto
         modtrace!("Channel/SenderFuture::poll() {:?}", self.sender_rt.channel_id);
 
         // Unsafe usage: this function does not moves out data from self, as required by
-        // Pin::map_unchecked_mut().
+        // Pin::get_unchecked_mut().
         let this = unsafe { self.get_unchecked_mut() };
 
         return match this.state {

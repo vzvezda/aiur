@@ -275,7 +275,9 @@ where
         self.awoken.itask_ptr.get().unwrap()
     }
 
-    pub(crate) fn is_awoken(&self, event_id: EventId) -> bool {
+    /// Used by a leaf feature in poll() method to verify if it was the reason the parent future
+    /// was awoken.
+    pub fn is_awoken(&self, event_id: EventId) -> bool {
         self.awoken.event_id.get() == event_id
     }
 
