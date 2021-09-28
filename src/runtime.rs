@@ -235,7 +235,8 @@ where
         loop {
             let itask_ptr = self.task_master.pop_task();
             if itask_ptr.is_none() {
-                modtrace!(self.tracer, "Rt: spawn phase - no tasks to spawn");
+                // commented out as it is shown too often
+                //modtrace!(self.tracer, "Rt: spawn phase - no tasks to spawn");
                 return;
             }
 
