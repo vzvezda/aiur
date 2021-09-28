@@ -16,6 +16,7 @@
 use std::cell::RefCell;
 use std::task::Waker;
 
+use crate::tracer::Tracer;
 use crate::reactor::EventId;
 
 // enable/disable output of modtrace! macro
@@ -145,9 +146,9 @@ pub(crate) struct OneshotRt {
 }
 
 impl OneshotRt {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(tracer: &Tracer) -> Self {
         OneshotRt {
-            inner: RefCell::new(InnerOneshotRt::new()),
+            inner: RefCell::new(InnerOneshotRt::new(tracer)),
         }
     }
 
@@ -199,13 +200,15 @@ impl OneshotRt {
 struct InnerOneshotRt {
     nodes: Vec<OneshotNode>,
     last_id: u32,
+    tracer: Tracer,
 }
 
 impl InnerOneshotRt {
-    fn new() -> Self {
+    fn new(tracer: &Tracer) -> Self {
         InnerOneshotRt {
             nodes: Vec::new(),
             last_id: 0,
+            tracer: tracer.clone(),
         }
     }
 
@@ -231,6 +234,7 @@ impl InnerOneshotRt {
         };
 
         modtrace!(
+            self.tracer,
             "OneshotRt: {:?} state {:?} -> {:?} ({})",
             oneshot_id,
             old,
@@ -239,7 +243,12 @@ impl InnerOneshotRt {
         );
 
         if self.nodes[idx].can_be_dropped() {
-            modtrace!("OneshotRt: remove {:?} from idx {}", oneshot_id, idx);
+            modtrace!(
+                self.tracer,
+                "OneshotRt: remove {:?} from idx {}",
+                oneshot_id,
+                idx
+            );
             self.nodes.remove(idx);
         }
     }
@@ -255,6 +264,7 @@ impl InnerOneshotRt {
         };
 
         modtrace!(
+            self.tracer,
             "OneshotRt: {:?} state {:?} -> {:?} ({})",
             oneshot_id,
             old,
@@ -264,7 +274,12 @@ impl InnerOneshotRt {
 
         if self.nodes[idx].can_be_dropped() {
             self.nodes.remove(idx);
-            modtrace!("OneshotRt: remove {:?} from idx {}", oneshot_id, idx);
+            modtrace!(
+                self.tracer,
+                "OneshotRt: remove {:?} from idx {}",
+                oneshot_id,
+                idx
+            );
         }
     }
 
@@ -284,6 +299,7 @@ impl InnerOneshotRt {
             recv_exchanged: recv_exchanged,
         };
         modtrace!(
+            self.tracer,
             "OneshotRt: {:?} state {:?} -> {:?} ({})",
             oneshot_id,
             old,
@@ -429,11 +445,11 @@ impl InnerOneshotRt {
         return None;
     }
 
-    unsafe fn exhange_impl<T>(tx_data: *mut (), rx_data: *mut ()) {
+    unsafe fn exhange_impl<T>(tx_data: *mut (), rx_data: *mut (), tracer: &Tracer) {
         let tx_data = std::mem::transmute::<*mut (), *mut Option<T>>(tx_data);
         let rx_data = std::mem::transmute::<*mut (), *mut Option<T>>(rx_data);
         std::mem::swap(&mut *tx_data, &mut *rx_data);
-        modtrace!("OneshotRt: exchange<T> mem::swap() just happened");
+        modtrace!(tracer, "OneshotRt: exchange<T> mem::swap() just happened");
     }
 
     pub(crate) unsafe fn exchange<T>(&mut self, oneshot_id: OneshotId) -> bool {
@@ -453,7 +469,7 @@ impl InnerOneshotRt {
                 return false;
             }
             (PeerState::Registered(ref tx), PeerState::Registered(ref rx)) => {
-                Self::exhange_impl::<T>(tx.data, rx.data);
+                Self::exhange_impl::<T>(tx.data, rx.data, &self.tracer);
                 self.set_receiver_ext(oneshot_id, PeerState::Exchanged, true, "by exchange()");
                 return true;
             }

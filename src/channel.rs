@@ -7,23 +7,23 @@ use std::marker::{PhantomData, PhantomPinned};
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
-use crate::channel_rt::{SwapResult, RecverRt, SenderRt, PeerRt};
+use crate::channel_rt::{PeerRt, RecverRt, SenderRt, SwapResult};
 use crate::reactor::{EventId, GetEventId, Reactor};
 use crate::runtime::Runtime;
 
 // enable/disable output of modtrace! macro
 const MODTRACE: bool = true;
 
-/// Creates a new asynchronous channel returning the pair of (Sender, Receiver). 
+/// Creates a new asynchronous channel returning the pair of (Sender, Receiver).
 ///
-/// This creates the bounded channel, so whenever a sender sends a data it is suspended 
+/// This creates the bounded channel, so whenever a sender sends a data it is suspended
 /// in await point until either receiver had the data received or channel got disconnected.
 ///
 /// Sender can be cloned to send data to the same channel, but only one Receiver is supported.
-/// 
+///
 /// While there is a channel half that awaits transmission and another half is gone,
 /// operation Result would be an error. In a case of the receiver it would be RecvError. When
-/// sender detects that receiver is gone the error contains the value sender was supposed 
+/// sender detects that receiver is gone the error contains the value sender was supposed
 /// to send.
 pub fn channel<'runtime, T, ReactorT: Reactor>(
     rt: &'runtime Runtime<ReactorT>,
@@ -58,10 +58,10 @@ impl<'runtime, T, ReactorT: Reactor> Sender<'runtime, T, ReactorT> {
         }
     }
 
-    /// Sends a value to a receiver half of communication channel. 
+    /// Sends a value to a receiver half of communication channel.
     ///
-    /// The awaited send() operation does not return until receiver gets the data or 
-    /// communication channel is gone by having receiver object dropped. In a case of 
+    /// The awaited send() operation does not return until receiver gets the data or
+    /// communication channel is gone by having receiver object dropped. In a case of
     /// closed channel sender receives the value back.
     pub async fn send(&mut self, value: T) -> Result<(), T> {
         SenderFuture::new(self.rt, self.sender_rt, value).await
@@ -107,7 +107,7 @@ impl<'runtime, T, ReactorT: Reactor> Recver<'runtime, T, ReactorT> {
         }
     }
 
-    /// Reads a next value from channel sent by sender half. Error is returned when all 
+    /// Reads a next value from channel sent by sender half. Error is returned when all
     /// senders are gone, so no values can be received anymore.
     pub async fn next(&mut self) -> Result<T, RecvError> {
         NextFuture::new(self.rt, self.recver_rt).await
@@ -145,7 +145,7 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
     fn new(rt: &'runtime Runtime<ReactorT>, sender_rt: SenderRt<'runtime>, value: T) -> Self {
         Self {
             rt,
-            sender_rt, 
+            sender_rt,
             data: Some(value),
             state: PeerFutureState::Created,
             _pin: PhantomPinned,
@@ -154,6 +154,7 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
 
     fn set_state(&mut self, new_state: PeerFutureState) {
         modtrace!(
+            self.rt.tracer(),
             "Channel/SenderFuture: {:?} state {:?} -> {:?}",
             self.sender_rt.channel_id,
             self.state,
@@ -165,6 +166,7 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
     fn set_state_closed(&mut self, exchange_result: SwapResult) {
         let new_state = PeerFutureState::Closed;
         modtrace!(
+            self.rt.tracer(),
             "Channel/SenderFuture: {:?} state {:?} -> {:?}, exchange result: {:?}",
             self.sender_rt.channel_id,
             self.state,
@@ -215,6 +217,7 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
             {
                 // keep state same like self.set_state(PeerFutureState::Exchanging);
                 modtrace!(
+                    self.rt.tracer(),
                     "Channel/NextFuture: {:?} state {:?} exchange result: {:?}",
                     self.sender_rt.channel_id,
                     self.state,
@@ -232,7 +235,11 @@ impl<'runtime, T, ReactorT: Reactor> Future for SenderFuture<'runtime, T, Reacto
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Self::Output> {
         let event_id = self.get_event_id();
-        modtrace!("Channel/SenderFuture::poll() {:?}", self.sender_rt.channel_id);
+        modtrace!(
+            self.rt.tracer(),
+            "Channel/SenderFuture::poll() {:?}",
+            self.sender_rt.channel_id
+        );
 
         // Unsafe usage: this function does not moves out data from self, as required by
         // Pin::get_unchecked_mut().
@@ -255,6 +262,7 @@ impl<'runtime, T, ReactorT: Reactor> Drop for SenderFuture<'runtime, T, ReactorT
     fn drop(&mut self) {
         if matches!(self.state, PeerFutureState::Exchanging) {
             modtrace!(
+                self.rt.tracer(),
                 "Channel/SenderFuture::drop() {:?} - cancel",
                 self.sender_rt.channel_id
             );
@@ -265,8 +273,12 @@ impl<'runtime, T, ReactorT: Reactor> Drop for SenderFuture<'runtime, T, ReactorT
             // Created: SenderFuture was not polled (so it was not pinned) and it
             // is not logically safe to invoke get_event_id_unchecked(). And we really
             // don't have to, because without poll there were not add_sender_fut() invoked.
-            // Closed: there is no registration date in ChannelRt anymore
-            modtrace!("Channel/SenderFuture::drop() {:?}", self.sender_rt.channel_id);
+            // Closed: there is no registration data in ChannelRt anymore
+            modtrace!(
+                self.rt.tracer(),
+                "Channel/SenderFuture::drop() {:?}",
+                self.sender_rt.channel_id
+            );
         }
     }
 }
@@ -290,7 +302,7 @@ impl<'runtime, T, ReactorT: Reactor> GetEventId for NextFuture<'runtime, T, Reac
 impl<'runtime, T, ReactorT: Reactor> NextFuture<'runtime, T, ReactorT> {
     fn new(rt: &'runtime Runtime<ReactorT>, recver_rt: RecverRt<'runtime>) -> Self {
         Self {
-            rt, 
+            rt,
             recver_rt,
             state: PeerFutureState::Created,
             data: None,
@@ -300,6 +312,7 @@ impl<'runtime, T, ReactorT: Reactor> NextFuture<'runtime, T, ReactorT> {
 
     fn set_state(&mut self, new_state: PeerFutureState) {
         modtrace!(
+            self.rt.tracer(),
             "Channel/NextFuture: {:?} state {:?} -> {:?}",
             self.recver_rt.channel_id,
             self.state,
@@ -312,6 +325,7 @@ impl<'runtime, T, ReactorT: Reactor> NextFuture<'runtime, T, ReactorT> {
     fn set_state_closed(&mut self, exchange_result: SwapResult) {
         let new_state = PeerFutureState::Closed;
         modtrace!(
+            self.rt.tracer(),
             "Channel/NextFuture: {:?} state {:?} -> {:?}, exchange result: {:?}",
             self.recver_rt.channel_id,
             self.state,
@@ -359,6 +373,7 @@ impl<'runtime, T, ReactorT: Reactor> NextFuture<'runtime, T, ReactorT> {
             {
                 // keep state same like self.set_state(PeerFutureState::Exchanging);
                 modtrace!(
+                    self.rt.tracer(),
                     "Channel/NextFuture: {:?} state {:?} exchange result: {:?}",
                     self.recver_rt.channel_id,
                     self.state,
@@ -373,7 +388,12 @@ impl<'runtime, T, ReactorT: Reactor> NextFuture<'runtime, T, ReactorT> {
 
 impl<'runtime, T, ReactorT: Reactor> Drop for NextFuture<'runtime, T, ReactorT> {
     fn drop(&mut self) {
-        modtrace!("Channel/NextFuture::drop() {:?}", self.recver_rt.channel_id);
+        modtrace!(
+            self.rt.tracer(),
+            "Channel/NextFuture::drop() {:?}",
+            self.recver_rt.channel_id
+        );
+
         if matches!(self.state, PeerFutureState::Exchanging) {
             // unsafe: this object was pinned, so it is ok to invoke get_event_id_unchecked
             let event_id = unsafe { self.get_event_id_unchecked() };
@@ -387,7 +407,11 @@ impl<'runtime, T, ReactorT: Reactor> Future for NextFuture<'runtime, T, ReactorT
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Self::Output> {
         let event_id = self.get_event_id();
-        modtrace!("Channel/NextFuture::poll() {:?}", self.recver_rt.channel_id);
+        modtrace!(
+            self.rt.tracer(),
+            "Channel/NextFuture::poll() {:?}",
+            self.recver_rt.channel_id
+        );
 
         // Unsafe usage: this function does not moves out data from self, as required by
         // Pin::map_unchecked_mut().

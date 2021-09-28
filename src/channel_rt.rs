@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::task::Waker;
 
 use crate::reactor::EventId;
+use crate::tracer::Tracer;
 
 // enable/disable output of modtrace! macro
 const MODTRACE: bool = true;
@@ -97,9 +98,9 @@ pub(crate) struct ChannelRt {
 }
 
 impl ChannelRt {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(tracer: &Tracer) -> Self {
         ChannelRt {
-            inner: RefCell::new(InnerChannelRt::new()),
+            inner: RefCell::new(InnerChannelRt::new(tracer)),
         }
     }
 
@@ -270,7 +271,7 @@ struct ChannelNode {
 }
 
 impl ChannelNode {
-    fn new(channel_id: ChannelId) -> Self {
+    fn new(channel_id: ChannelId, tracer: &Tracer) -> Self {
         let node = Self {
             id: channel_id,
             rx_state: RxState::Idle,
@@ -278,7 +279,7 @@ impl ChannelNode {
             senders_alive: 0, // intially incremented by ChSender::new()
         };
 
-        modtrace!("ChannelRt: new {:?} {:?}", channel_id, node);
+        modtrace!(tracer, "ChannelRt: new {:?} {:?}", channel_id, node);
         node
     }
 
@@ -287,8 +288,9 @@ impl ChannelNode {
     // 'aiur::ChannelRt: chan:1 reg receiver future (Idle <- [0]:1) -> (Reg <- [0]:1)'
     fn traced<MutateStateFn: FnOnce(&mut ChannelNode)>(
         &mut self,
-        mut_state_fn: MutateStateFn,
+        tracer: &Tracer,
         op: &str,
+        mut_state_fn: MutateStateFn,
     ) {
         if MODTRACE {
             // remember the old state
@@ -299,6 +301,7 @@ impl ChannelNode {
 
             // trace state change as old -> new
             modtrace!(
+                tracer,
                 "ChannelRt: {:?} {} {} -> {:?} ",
                 self.id,
                 op,
@@ -310,76 +313,55 @@ impl ChannelNode {
         }
     }
 
-    fn add_sender_future(&mut self, reg_info: RegInfo) {
-        self.traced(
-            |node| {
-                node.tx_queue.push(TxState::new(reg_info));
-            },
-            "add sender future",
-        );
+    fn add_sender_future(&mut self, reg_info: RegInfo, tracer: &Tracer) {
+        self.traced(tracer, "add sender future", |node| {
+            node.tx_queue.push(TxState::new(reg_info));
+        });
     }
 
-    fn reg_recv_future(&mut self, reg_info: RegInfo) {
-        self.traced(
-            |node| {
-                node.rx_state = RxState::Pinned(reg_info);
-            },
-            "reg receiver future",
-        );
+    fn reg_recv_future(&mut self, reg_info: RegInfo, tracer: &Tracer) {
+        self.traced(tracer, "reg receiver future", |node| {
+            node.rx_state = RxState::Pinned(reg_info);
+        });
     }
 
-    fn inc_sender(&mut self) {
-        self.traced(
-            |node| {
-                node.senders_alive += 1;
-            },
-            "inc senders",
-        );
+    fn inc_sender(&mut self, tracer: &Tracer) {
+        self.traced(tracer, "inc senders", |node| {
+            node.senders_alive += 1;
+        });
     }
 
-    fn dec_sender(&mut self) {
-        self.traced(
-            |node| {
-                node.senders_alive -= 1;
-            },
-            "dec senders",
-        );
+    fn dec_sender(&mut self, tracer: &Tracer) {
+        self.traced(tracer, "dec senders", |node| {
+            node.senders_alive -= 1;
+        });
     }
 
-    fn cancel_sender_fut(&mut self, event_id: EventId) {
-        self.traced(
-            |node| {
-                node.tx_queue.remove(
-                    node.tx_queue
-                        .iter()
-                        .position(|x| x.event_id == event_id)
-                        .unwrap(),
-                );
-            },
-            "sender future canceled",
-        );
+    fn cancel_sender_fut(&mut self, event_id: EventId, tracer: &Tracer) {
+        self.traced(tracer, "sender future canceled", |node| {
+            node.tx_queue.remove(
+                node.tx_queue
+                    .iter()
+                    .position(|x| x.event_id == event_id)
+                    .unwrap(),
+            );
+        });
     }
 
-    fn cancel_receiver_fut(&mut self) {
-        self.traced(
-            |node| {
-                node.rx_state = RxState::Idle;
-            },
-            "receiver future canceled",
-        );
+    fn cancel_receiver_fut(&mut self, tracer: &Tracer) {
+        self.traced(tracer, "receiver future canceled", |node| {
+            node.rx_state = RxState::Idle;
+        });
     }
 
     fn is_channel_alive(&self) -> bool {
         self.senders_alive > 0 || !matches!(self.rx_state, RxState::Gone)
     }
 
-    fn close_receiver(&mut self) {
-        self.traced(
-            |node| {
-                node.rx_state = RxState::Gone;
-            },
-            "receiver gone",
-        );
+    fn close_receiver(&mut self, tracer: &Tracer) {
+        self.traced(tracer, "receiver gone", |node| {
+            node.rx_state = RxState::Gone;
+        });
     }
 
     // This is the implementation for the runtime if this ChannelNode ready to produce any
@@ -473,26 +455,20 @@ impl ChannelNode {
 
     // This is invoked by Sender future and it should be asserted that there is a
     // sender future is Pinned with either Emptied value or not.
-    unsafe fn swap_sender<T>(&mut self) -> SwapResult {
+    unsafe fn swap_sender<T>(&mut self, tracer: &Tracer) -> SwapResult {
         if let Some(first_tx_state) = self.tx_queue.first_mut() {
             match (&self.rx_state, &first_tx_state.completion) {
                 (RxState::Gone, TxCompletion::Pinned(..)) => {
-                    self.traced(
-                        |node| {
-                            node.tx_queue.remove(0);
-                        },
-                        "awoken sender",
-                    );
+                    self.traced(tracer, "awoken sender", |node| {
+                        node.tx_queue.remove(0);
+                    });
                     // Receiver is gone and sender still holds the value
                     SwapResult::Disconnected
                 }
                 (_, TxCompletion::Emptied) => {
-                    self.traced(
-                        |node| {
-                            node.tx_queue.remove(0);
-                        },
-                        "awoken sender",
-                    );
+                    self.traced(tracer, "awoken sender", |node| {
+                        node.tx_queue.remove(0);
+                    });
                     // This is a typical good exhange scenario that receiver has moved
                     // the value out of sender storage and replanced it with None.
                     SwapResult::Done
@@ -515,7 +491,7 @@ impl ChannelNode {
 
     // This is invoked by Receiver future and the precondition that receiver future has
     // pinned.
-    unsafe fn swap_receiver<T>(&mut self) -> SwapResult {
+    unsafe fn swap_receiver<T>(&mut self, tracer: &Tracer) -> SwapResult {
         if let Some(first_tx_state) = self.tx_queue.first_mut() {
             // Just do the actual data exchange between receiver and first sender in queue.
             // It can happen that between we awake the receiver and it invokes swap_receiver()
@@ -524,13 +500,10 @@ impl ChannelNode {
             match (&self.rx_state, &first_tx_state.completion) {
                 (RxState::Pinned(ref rx_reg_info), TxCompletion::Pinned(tx_ptr)) => {
                     Self::exchange_impl::<T>(rx_reg_info.data, *tx_ptr);
-                    self.traced(
-                        move |node| {
-                            node.rx_state = RxState::Idle;
-                            node.tx_queue[0].completion = TxCompletion::Emptied;
-                        },
-                        "mem::swapped",
-                    );
+                    self.traced(tracer, "mem::swapped", move |node| {
+                        node.rx_state = RxState::Idle;
+                        node.tx_queue[0].completion = TxCompletion::Emptied;
+                    });
                     SwapResult::Done
                 }
                 // other state are not legal and should be asserted by Channel Futures:
@@ -629,7 +602,7 @@ impl std::fmt::Debug for ChannelNode {
 struct InnerChannelRt {
     // Improvement ideas:
     //
-    // There are various ideas how we can improve containers for channels in order to 
+    // There are various ideas how we can improve containers for channels in order to
     // avoid dynamic memory usages:
     //     * fixed size table
     //     * as the future is pinned, we can have some kind of 'intrusive list'
@@ -637,27 +610,29 @@ struct InnerChannelRt {
     //       let channel: Pin<&mut ChannelNode> = ...
     //
     // Another improvement idea that currently executor has to scan all channel objects
-    // to verify if there is an event. Whenever there is a channel node that goes into 
+    // to verify if there is an event. Whenever there is a channel node that goes into
     // the state that produces awake event, it can be stored somewhere in a queue.
     // The queue can be also made by an intrusive list.
     //
     // These ideas seems to require preparing the benching.
     nodes: Vec<ChannelNode>,
     last_id: u32,
+    tracer: Tracer,
 }
 
 impl InnerChannelRt {
-    fn new() -> Self {
+    fn new(tracer: &Tracer) -> Self {
         InnerChannelRt {
             nodes: Vec::new(),
             last_id: 0,
+            tracer: tracer.clone(),
         }
     }
 
     fn create(&mut self) -> ChannelId {
         self.last_id += 1;
         let channel_id = ChannelId(self.last_id);
-        self.nodes.push(ChannelNode::new(channel_id));
+        self.nodes.push(ChannelNode::new(channel_id, &self.tracer));
         channel_id
     }
 
@@ -692,7 +667,9 @@ impl InnerChannelRt {
         data: *mut (),
     ) {
         let reg_info = RegInfo::new(data, waker, event_id);
-        self.get_node_mut(channel_id).add_sender_future(reg_info);
+        let tracer = self.tracer.clone();
+        self.get_node_mut(channel_id)
+            .add_sender_future(reg_info, &tracer);
     }
 
     fn reg_receiver_fut(
@@ -702,8 +679,10 @@ impl InnerChannelRt {
         event_id: EventId,
         data: *mut (),
     ) {
+        let tracer = self.tracer.clone();
         let reg_info = RegInfo::new(data, waker, event_id);
-        self.get_node_mut(channel_id).reg_recv_future(reg_info);
+        self.get_node_mut(channel_id)
+            .reg_recv_future(reg_info, &tracer);
     }
 
     // This is invoked by Sender future and it should be asserted that there is a
@@ -711,7 +690,8 @@ impl InnerChannelRt {
     //
     // Panics if channel_id is not found and if channel id is inconsistent state.
     unsafe fn swap_sender<T>(&mut self, channel_id: ChannelId) -> SwapResult {
-        self.get_node_mut(channel_id).swap_sender::<T>()
+        let tracer = self.tracer.clone();
+        self.get_node_mut(channel_id).swap_sender::<T>(&tracer)
     }
 
     // This is invoked by Receiver future and the precondition that receiver future has
@@ -719,7 +699,8 @@ impl InnerChannelRt {
     //
     // Panics if channel_id is not found and if channel id is inconsistent state.
     unsafe fn swap_receiver<T>(&mut self, channel_id: ChannelId) -> SwapResult {
-        self.get_node_mut(channel_id).swap_receiver::<T>()
+        let tracer = self.tracer.clone();
+        self.get_node_mut(channel_id).swap_receiver::<T>(&tracer)
     }
 
     // Awakes the waker and returns its EventId
@@ -734,16 +715,19 @@ impl InnerChannelRt {
     }
 
     fn inc_sender(&mut self, channel_id: ChannelId) {
-        self.get_node_mut(channel_id).inc_sender();
+        let tracer = self.tracer.clone();
+        self.get_node_mut(channel_id).inc_sender(&tracer);
     }
 
     fn dec_sender(&mut self, channel_id: ChannelId) {
-        self.get_node_mut(channel_id).dec_sender();
+        let tracer = self.tracer.clone();
+        self.get_node_mut(channel_id).dec_sender(&tracer);
         self.drop_channel_if_needed(channel_id);
     }
 
     fn close_receiver(&mut self, channel_id: ChannelId) {
-        self.get_node_mut(channel_id).close_receiver();
+        let tracer = self.tracer.clone();
+        self.get_node_mut(channel_id).close_receiver(&tracer);
         self.drop_channel_if_needed(channel_id);
     }
 
@@ -755,16 +739,19 @@ impl InnerChannelRt {
                     .position(|node| node.id == channel_id)
                     .unwrap(),
             );
-            modtrace!("ChannelRt: {:?} has been dropped", channel_id);
+            modtrace!(&self.tracer, "ChannelRt: {:?} has been dropped", channel_id);
         }
     }
 
     fn cancel_sender_fut(&mut self, channel_id: ChannelId, event_id: EventId) {
-        self.get_node_mut(channel_id).cancel_sender_fut(event_id);
+        let tracer = self.tracer.clone();
+        self.get_node_mut(channel_id)
+            .cancel_sender_fut(event_id, &tracer);
     }
 
     fn cancel_receiver_fut(&mut self, channel_id: ChannelId) {
-        self.get_node_mut(channel_id).cancel_receiver_fut();
+        let tracer = self.tracer.clone();
+        self.get_node_mut(channel_id).cancel_receiver_fut(&tracer);
     }
 }
 
@@ -892,7 +879,7 @@ mod tests {
     /// Verifies that channel is destroyed after both sender and recver no longer attached.
     #[test]
     fn api_test_dec_references_destroys_channel() {
-        let mut crt = InnerChannelRt::new();
+        let mut crt = InnerChannelRt::new(&Tracer::new_testing());
 
         let channel_id = crt.create();
         assert!(crt.is_exist(channel_id));
@@ -911,7 +898,7 @@ mod tests {
     /// invoking exchange().
     #[test]
     fn api_test_peers_pinned_gives_value_exchanged() {
-        let crt = ChannelRt::new();
+        let crt = ChannelRt::new(&Tracer::new_testing());
 
         let mut sender: Option<u32> = Some(100);
         let mut recver: Option<u32> = None;
@@ -947,7 +934,7 @@ mod tests {
     /// the sender an error (Disconnecting) and the value back.
     #[test]
     fn api_test_cancel_receiver_gives_disconnected_err_on_sender() {
-        let crt = ChannelRt::new();
+        let crt = ChannelRt::new(&Tracer::new_testing());
 
         let mut sender: Option<u32> = Some(100);
         let mut recver: Option<u32> = None;
@@ -987,7 +974,7 @@ mod tests {
     /// When there are two senders pinned, both values are received on recver side.
     #[test]
     fn api_test_two_sender_send_value_gives_both_received() {
-        let crt = ChannelRt::new();
+        let crt = ChannelRt::new(&Tracer::new_testing());
 
         // storage for exchange
         let mut sender1: Option<u32> = Some(100);
@@ -1031,7 +1018,7 @@ mod tests {
     /// values from senders.
     #[test]
     fn api_test_cancel_exchanged_sender_does_not_affect_receiver() {
-        let crt = ChannelRt::new();
+        let crt = ChannelRt::new(&Tracer::new_testing());
 
         // storage for exchange
         let mut sender1: Option<u32> = Some(100);
@@ -1074,7 +1061,7 @@ mod tests {
     /// With canceling the scheduled sender receiver still receives values from another senders.
     #[test]
     fn api_test_cancel_scheduled_sender_recv_still_receive_values_from_another_senders() {
-        let crt = ChannelRt::new();
+        let crt = ChannelRt::new(&Tracer::new_testing());
 
         // storage for exchange
         let mut sender1: Option<u32> = Some(100);

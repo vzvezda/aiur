@@ -7,6 +7,7 @@ use std::marker::{PhantomData, PhantomPinned};
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
+use crate::tracer::Tracer;
 use crate::oneshot_rt::OneshotId;
 use crate::reactor::{EventId, GetEventId, Reactor};
 use crate::runtime::Runtime;
@@ -17,9 +18,9 @@ const MODTRACE: bool = true;
 // -----------------------------------------------------------------------------------------------
 // Public oneshot() API
 
-/// Creates a new oneshot channel and returns the pair of (sender, receiver). 
+/// Creates a new oneshot channel and returns the pair of (sender, receiver).
 ///
-/// The created channel is bounded, whenever a sender sends a data it is suspended in await 
+/// The created channel is bounded, whenever a sender sends a data it is suspended in await
 /// point until either receiver had the data received or oneshot channel got disconnected.
 ///
 /// Neither sender nor receiver can be cloned, it is single use, single producer, single consumer
@@ -37,13 +38,13 @@ pub fn oneshot<'runtime, T, ReactorT: Reactor>(
     )
 }
 
-/// Error type returned by Receiver: the only possible error is oneshot channel closed 
+/// Error type returned by Receiver: the only possible error is oneshot channel closed
 /// on sender's side.
 #[derive(Debug)] // Debug required for Result.unwrap()
 pub struct RecvError;
 
 // -----------------------------------------------------------------------------------------------
-// RuntimeOneshot: it is commonly used here: runtime and oneshot_id coupled together.
+// RuntimeOneshot: it is often used here: runtime and oneshot_id coupled together.
 struct RuntimeOneshot<'runtime, ReactorT: Reactor> {
     rt: &'runtime Runtime<ReactorT>,
     oneshot_id: OneshotId,
@@ -103,10 +104,11 @@ impl<'runtime, T, ReactorT: Reactor> SenderOnce<'runtime, T, ReactorT> {
     }
 
     /// Sends value to the receiver side of the channel. If receiver end is already closed,
-    /// the original value returned as error in result.
+    /// the original value returned as error in result. 
     pub async fn send(&mut self, value: T) -> Result<(), T> {
         let prev = std::mem::replace(&mut self.inner, SenderInner::Sent(PhantomData));
 
+        // TODO: perhaps send should receive (self,..) instead of (&mut self)?
         match prev {
             SenderInner::Sent(_) => panic!(concat!(
                 "aiur: oneshot::SenderOnce::send() invoked twice.",
@@ -157,6 +159,7 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
 
     fn set_state(&mut self, new_state: PeerFutureState) {
         modtrace!(
+            self.tracer(),
             "Oneshot/SenderFuture: {:?} state {:?} -> {:?}",
             self.runtime_channel.oneshot_id(),
             self.state,
@@ -190,13 +193,21 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
             Poll::Ready(Err(self.data.take().unwrap()))
         };
     }
+
+    fn tracer(&self) -> &Tracer {
+        self.runtime_channel.rt.tracer()
+    }
 }
 
 impl<'runtime, T, ReactorT: Reactor> Future for SenderFuture<'runtime, T, ReactorT> {
     type Output = Result<(), T>;
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Self::Output> {
-        modtrace!("Oneshot/SenderFuture::poll() {:?}", self.runtime_channel.oneshot_id());
+        modtrace!(
+            self.tracer(),
+            "Oneshot/SenderFuture::poll() {:?}",
+            self.runtime_channel.oneshot_id()
+        );
         let event_id = self.get_event_id();
 
         // Unsafe usage: this function does not moves out data from self, as required by
@@ -215,7 +226,7 @@ impl<'runtime, T, ReactorT: Reactor> Future for SenderFuture<'runtime, T, Reacto
 
 impl<'runtime, T, ReactorT: Reactor> Drop for SenderFuture<'runtime, T, ReactorT> {
     fn drop(&mut self) {
-        modtrace!("Oneshot/SenderFuture::drop()");
+        modtrace!(self.tracer(), "Oneshot/SenderFuture::drop()");
         self.runtime_channel.cancel_sender();
     }
 }
@@ -228,7 +239,7 @@ impl<'runtime, T, ReactorT: Reactor> Drop for SenderFuture<'runtime, T, ReactorT
 //
 /// The receiving half of the oneshot channel created by [oneshot()] function.
 ///
-/// It implements the [std::future::Future], so app code just awaits on this object to receive 
+/// It implements the [std::future::Future], so app code just awaits on this object to receive
 /// the value from sender.
 pub struct RecverOnce<'runtime, T, ReactorT: Reactor> {
     runtime_channel: RuntimeOneshot<'runtime, ReactorT>,
@@ -251,6 +262,7 @@ impl<'runtime, T, ReactorT: Reactor> RecverOnce<'runtime, T, ReactorT> {
 
     fn set_state(&mut self, new_state: PeerFutureState) {
         modtrace!(
+            self.tracer(),
             "Oneshot/ReceiverFuture: state {:?} -> {:?}",
             self.state,
             new_state
@@ -281,11 +293,15 @@ impl<'runtime, T, ReactorT: Reactor> RecverOnce<'runtime, T, ReactorT> {
             Poll::Ready(Err(RecvError))
         };
     }
+
+    fn tracer(&self) -> &Tracer {
+        self.runtime_channel.rt.tracer()
+    }
 }
 
 impl<'runtime, T, ReactorT: Reactor> Drop for RecverOnce<'runtime, T, ReactorT> {
     fn drop(&mut self) {
-        modtrace!("Oneshot/ReceiverFuture::drop()");
+        modtrace!(self.tracer(), "Oneshot/ReceiverFuture::drop()");
         self.runtime_channel.cancel_receiver();
     }
 }
@@ -295,7 +311,7 @@ impl<'runtime, T, ReactorT: Reactor> Future for RecverOnce<'runtime, T, ReactorT
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Self::Output> {
         let event_id = self.get_event_id();
-        modtrace!("Oneshot/ReceiverFuture::poll()");
+        modtrace!(self.tracer(), "Oneshot/ReceiverFuture::poll()");
 
         // Unsafe usage: this function does not moves out data from self, as required by
         // Pin::map_unchecked_mut().

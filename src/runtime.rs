@@ -10,6 +10,7 @@ use crate::channel_rt::ChannelRt;
 use crate::oneshot_rt::OneshotRt;
 use crate::reactor::{EventId, Reactor};
 use crate::task::{allocate_void_task, construct_task, Completion, ITask};
+use crate::tracer::Tracer;
 
 // enable/disable output of modtrace! macro
 const MODTRACE: bool = true;
@@ -41,13 +42,15 @@ impl Awoken {
 struct TaskMaster {
     spawn_list: RefCell<VecDeque<*mut (dyn ITask + 'static)>>,
     active_tasks: Cell<u32>,
+    tracer: Tracer,
 }
 
 impl TaskMaster {
-    fn new() -> Self {
+    fn new(tracer: &Tracer) -> Self {
         TaskMaster {
             spawn_list: RefCell::new(VecDeque::new()),
             active_tasks: Cell::new(0),
+            tracer: tracer.clone(),
         }
     }
 
@@ -75,14 +78,24 @@ impl TaskMaster {
     fn inc_tasks(&self) {
         let old_tasks = self.active_tasks.get();
         let new_tasks = old_tasks + 1;
-        modtrace!("TaskMaster: inc tasks {} -> {}", old_tasks, new_tasks);
+        modtrace!(
+            self.tracer,
+            "TaskMaster: inc tasks {} -> {}",
+            old_tasks,
+            new_tasks
+        );
         self.active_tasks.set(new_tasks);
     }
 
     fn dec_tasks(&self) {
         let old_tasks = self.active_tasks.get();
         let new_tasks = old_tasks - 1;
-        modtrace!("TaskMaster: dec tasks {} -> {}", old_tasks, new_tasks);
+        modtrace!(
+            self.tracer,
+            "TaskMaster: dec tasks {} -> {}",
+            old_tasks,
+            new_tasks
+        );
         self.active_tasks.set(self.active_tasks.get() - 1);
     }
 }
@@ -94,19 +107,21 @@ pub struct Runtime<ReactorT> {
     task_master: TaskMaster,
     oneshot_rt: OneshotRt,
     channel_rt: ChannelRt,
+    tracer: Tracer,
 }
 
 impl<ReactorT> Runtime<ReactorT>
 where
     ReactorT: Reactor,
 {
-    pub(crate) fn new(reactor: ReactorT) -> Self {
+    pub(crate) fn new(reactor: ReactorT, tracer: Tracer) -> Self {
         Self {
             reactor,
             awoken: Awoken::new(),
-            task_master: TaskMaster::new(),
-            oneshot_rt: OneshotRt::new(),
-            channel_rt: ChannelRt::new(),
+            task_master: TaskMaster::new(&tracer),
+            oneshot_rt: OneshotRt::new(&tracer),
+            channel_rt: ChannelRt::new(&tracer),
+            tracer,
         }
     }
 
@@ -220,12 +235,16 @@ where
         loop {
             let itask_ptr = self.task_master.pop_task();
             if itask_ptr.is_none() {
-                modtrace!("Rt: spawn phase - no tasks to spawn");
+                modtrace!(self.tracer, "Rt: spawn phase - no tasks to spawn");
                 return;
             }
 
             let itask_ptr = itask_ptr.unwrap();
-            modtrace!("Rt: spawn phase - found a task {:?} to spawn", itask_ptr);
+            modtrace!(
+                self.tracer,
+                "Rt: spawn phase - found a task {:?} to spawn",
+                itask_ptr
+            );
 
             let completed = unsafe {
                 (*itask_ptr).on_pinned();
@@ -247,7 +266,10 @@ where
     pub(crate) fn poll_phase(&self) -> Option<*mut dyn ITask> {
         if !self.task_master.has_scheduled_tasks() {
             // it happens: we have tasks in spawn list, but nothing to wait in reactor
-            modtrace!("Rt: poll phase no tasks in reactor (will check spawn list or channels)");
+            modtrace!(
+                self.tracer,
+                "Rt: poll phase no tasks in reactor (will check spawn list or channels)"
+            );
             return None;
         }
 
@@ -264,6 +286,10 @@ where
         } else {
             None
         }
+    }
+
+    pub(crate) fn tracer(&self) -> &Tracer {
+        &self.tracer
     }
 
     fn wait(&self) -> *mut dyn ITask {

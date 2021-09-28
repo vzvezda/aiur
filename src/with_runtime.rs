@@ -6,6 +6,7 @@ use std::future::Future;
 
 use crate::Reactor;
 use crate::Runtime;
+use crate::Tracer;
 
 // [1] - improvement to this machinery to support reference in input and return type
 //       of async function supplied to with_runtime() function. So with this improvement
@@ -53,6 +54,7 @@ where
 /// function that also accept additional parameter for reactor.
 pub fn with_runtime_base<ReactorT, FuncT, InitT, ResT>(
     reactor: ReactorT,
+    tracer: Tracer,
     async_function: FuncT,
     init: InitT,
 ) -> ResT
@@ -61,7 +63,7 @@ where
     FuncT: for<'runtime> LifetimeLinkerFn<'runtime, ReactorT, InitT, ResT>,
     ReactorT: Reactor,
 {
-    let runtime = Runtime::<ReactorT>::new(reactor);
+    let runtime = Runtime::<ReactorT>::new(reactor, tracer);
     let future = async_function.call(&runtime, init);
 
     // return the result of the execution of the future

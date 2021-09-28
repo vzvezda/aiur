@@ -5,11 +5,9 @@
 //
 
 // Module level tracing
-#[macro_use]
 macro_rules! modtrace {
-    ($fmt_str:tt)
-        => ( if (MODTRACE) { println!(concat!("aiur::", $fmt_str)) });
-    ($fmt_str:tt, $($x:expr),* )
-        => ( if (MODTRACE) { println!(concat!("aiur::", $fmt_str), $($x),* ) });
+    ($log:expr, $msg:tt)
+        => ( if (MODTRACE) { $log.fmt(format_args!($msg)) });
+    ($log:expr, $fmt_str:tt, $($x:expr),* )
+        => ( if (MODTRACE) { $log.fmt(format_args!($fmt_str, $($x),*)) } );
 }
-
