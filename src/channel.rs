@@ -155,7 +155,7 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
     fn set_state(&mut self, new_state: PeerFutureState) {
         modtrace!(
             self.rt.tracer(),
-            "Channel/SenderFuture: {:?} state {:?} -> {:?}",
+            "channel_sender_future: {:?} state {:?} -> {:?}",
             self.sender_rt.channel_id,
             self.state,
             new_state
@@ -167,7 +167,7 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
         let new_state = PeerFutureState::Closed;
         modtrace!(
             self.rt.tracer(),
-            "Channel/SenderFuture: {:?} state {:?} -> {:?}, exchange result: {:?}",
+            "channel_sender_future: {:?} state {:?} -> {:?}, exchange result: {:?}",
             self.sender_rt.channel_id,
             self.state,
             new_state,
@@ -218,7 +218,7 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
                 // keep state same like self.set_state(PeerFutureState::Exchanging);
                 modtrace!(
                     self.rt.tracer(),
-                    "Channel/NextFuture: {:?} state {:?} exchange result: {:?}",
+                    "channel_next_future: {:?} state {:?} exchange result: {:?}",
                     self.sender_rt.channel_id,
                     self.state,
                     SwapResult::TryLater
@@ -237,7 +237,7 @@ impl<'runtime, T, ReactorT: Reactor> Future for SenderFuture<'runtime, T, Reacto
         let event_id = self.get_event_id();
         modtrace!(
             self.rt.tracer(),
-            "Channel/SenderFuture::poll() {:?}",
+            "channel_sender_future: in the poll() {:?}",
             self.sender_rt.channel_id
         );
 
@@ -250,7 +250,7 @@ impl<'runtime, T, ReactorT: Reactor> Future for SenderFuture<'runtime, T, Reacto
             PeerFutureState::Exchanging => this.close(event_id),
             PeerFutureState::Closed => {
                 panic!(
-                    "aiur: channel::SenderFuture {:?} was polled after completion.",
+                    "aiur/channel_sender_future: {:?} was polled after completion.",
                     this.sender_rt.channel_id
                 );
             }
@@ -263,7 +263,7 @@ impl<'runtime, T, ReactorT: Reactor> Drop for SenderFuture<'runtime, T, ReactorT
         if matches!(self.state, PeerFutureState::Exchanging) {
             modtrace!(
                 self.rt.tracer(),
-                "Channel/SenderFuture::drop() {:?} - cancel",
+                "channel_sender_future: in the drop() {:?} - cancelling",
                 self.sender_rt.channel_id
             );
             // unsafe: this object was pinned, so it is ok to invoke get_event_id_unchecked
@@ -276,7 +276,7 @@ impl<'runtime, T, ReactorT: Reactor> Drop for SenderFuture<'runtime, T, ReactorT
             // Closed: there is no registration data in ChannelRt anymore
             modtrace!(
                 self.rt.tracer(),
-                "Channel/SenderFuture::drop() {:?}",
+                "channel_sender_future: in the drop() {:?} no op",
                 self.sender_rt.channel_id
             );
         }
@@ -313,7 +313,7 @@ impl<'runtime, T, ReactorT: Reactor> NextFuture<'runtime, T, ReactorT> {
     fn set_state(&mut self, new_state: PeerFutureState) {
         modtrace!(
             self.rt.tracer(),
-            "Channel/NextFuture: {:?} state {:?} -> {:?}",
+            "channel_next_future: {:?} state {:?} -> {:?}",
             self.recver_rt.channel_id,
             self.state,
             new_state
@@ -326,7 +326,7 @@ impl<'runtime, T, ReactorT: Reactor> NextFuture<'runtime, T, ReactorT> {
         let new_state = PeerFutureState::Closed;
         modtrace!(
             self.rt.tracer(),
-            "Channel/NextFuture: {:?} state {:?} -> {:?}, exchange result: {:?}",
+            "channel_next_future: {:?} state {:?} -> {:?}, exchange result: {:?}",
             self.recver_rt.channel_id,
             self.state,
             new_state,
@@ -374,7 +374,7 @@ impl<'runtime, T, ReactorT: Reactor> NextFuture<'runtime, T, ReactorT> {
                 // keep state same like self.set_state(PeerFutureState::Exchanging);
                 modtrace!(
                     self.rt.tracer(),
-                    "Channel/NextFuture: {:?} state {:?} exchange result: {:?}",
+                    "channel_next_future: {:?} state {:?} exchange result: {:?}",
                     self.recver_rt.channel_id,
                     self.state,
                     SwapResult::TryLater
@@ -388,16 +388,22 @@ impl<'runtime, T, ReactorT: Reactor> NextFuture<'runtime, T, ReactorT> {
 
 impl<'runtime, T, ReactorT: Reactor> Drop for NextFuture<'runtime, T, ReactorT> {
     fn drop(&mut self) {
-        modtrace!(
-            self.rt.tracer(),
-            "Channel/NextFuture::drop() {:?}",
-            self.recver_rt.channel_id
-        );
-
         if matches!(self.state, PeerFutureState::Exchanging) {
+            modtrace!(
+                self.rt.tracer(),
+                "channel_next_future: in the drop() {:?} cancelling",
+                self.recver_rt.channel_id
+            );
+
             // unsafe: this object was pinned, so it is ok to invoke get_event_id_unchecked
             let event_id = unsafe { self.get_event_id_unchecked() };
             self.recver_rt.unpin(event_id);
+        } else {
+            modtrace!(
+                self.rt.tracer(),
+                "channel_next_future: in the drop() {:?} no op",
+                self.recver_rt.channel_id
+            );
         }
     }
 }
@@ -409,7 +415,7 @@ impl<'runtime, T, ReactorT: Reactor> Future for NextFuture<'runtime, T, ReactorT
         let event_id = self.get_event_id();
         modtrace!(
             self.rt.tracer(),
-            "Channel/NextFuture::poll() {:?}",
+            "channel_next_future: in the poll() {:?}",
             self.recver_rt.channel_id
         );
 
@@ -422,7 +428,7 @@ impl<'runtime, T, ReactorT: Reactor> Future for NextFuture<'runtime, T, ReactorT
             PeerFutureState::Exchanging => this.close(event_id),
             PeerFutureState::Closed => {
                 panic!(
-                    "aiur: channel::NextFuture {:?} was polled after completion.",
+                    "aiur/channel_next_future: {:?} was polled after completion.",
                     this.recver_rt.channel_id
                 )
             }

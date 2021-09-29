@@ -279,7 +279,7 @@ impl ChannelNode {
             senders_alive: 0, // intially incremented by ChSender::new()
         };
 
-        modtrace!(tracer, "ChannelRt: new {:?} {:?}", channel_id, node);
+        modtrace!(tracer, "channel_rt: new {:?} {:?}", channel_id, node);
         node
     }
 
@@ -302,7 +302,7 @@ impl ChannelNode {
             // trace state change as old -> new
             modtrace!(
                 tracer,
-                "ChannelRt: {:?} {} {} -> {:?} ",
+                "channel_rt: {:?} {} {} -> {:?} ",
                 self.id,
                 op,
                 old_self,
@@ -739,7 +739,7 @@ impl InnerChannelRt {
                     .position(|node| node.id == channel_id)
                     .unwrap(),
             );
-            modtrace!(&self.tracer, "ChannelRt: {:?} has been dropped", channel_id);
+            modtrace!(&self.tracer, "channel_rt: {:?} has been dropped", channel_id);
         }
     }
 

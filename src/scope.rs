@@ -66,7 +66,7 @@ where
         //self.tasks.push(task);
         modtrace!(
             self.rt.tracer(),
-            "Scope: scope '{}' to spawn task {:?}",
+            "scope: scope '{}' to spawn task {:?}",
             self.name,
             task
         );
@@ -88,11 +88,11 @@ where
     fn drop(&mut self) {
         modtrace!(
             self.rt.tracer(),
-            "Scope: <<<< Entering the poll loop in Scope('{}')::drop()",
+            "scope: <<<< Entering the poll loop in Scope('{}')::drop()",
             self.name
         );
         while self.has_uncompleted_tasks() {
-            modtrace!(self.rt.tracer(), "Scope: poll loop in Scope('{}')", self.name);
+            modtrace!(self.rt.tracer(), "scope: poll loop in Scope('{}')", self.name);
             self.rt.spawn_phase();
             // TODO: here should be a more efficent way to verify if there are uncompleted
             // tasks.
@@ -108,7 +108,7 @@ where
 
         modtrace!(
             self.rt.tracer(),
-            "Scope: >>>> Left the poll loop in Scope('{}')::drop(), scope dropped",
+            "scope: >>>> Left the poll loop in Scope('{}')::drop(), scope dropped",
             self.name
         );
     }

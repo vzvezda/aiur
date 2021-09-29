@@ -80,7 +80,7 @@ impl TaskMaster {
         let new_tasks = old_tasks + 1;
         modtrace!(
             self.tracer,
-            "TaskMaster: inc tasks {} -> {}",
+            "tasks: inc tasks {} -> {}",
             old_tasks,
             new_tasks
         );
@@ -92,7 +92,7 @@ impl TaskMaster {
         let new_tasks = old_tasks - 1;
         modtrace!(
             self.tracer,
-            "TaskMaster: dec tasks {} -> {}",
+            "tasks: dec tasks {} -> {}",
             old_tasks,
             new_tasks
         );
@@ -243,7 +243,7 @@ where
             let itask_ptr = itask_ptr.unwrap();
             modtrace!(
                 self.tracer,
-                "Rt: spawn phase - found a task {:?} to spawn",
+                "runtime: spawn phase - found a task {:?} to spawn",
                 itask_ptr
             );
 
@@ -269,7 +269,7 @@ where
             // it happens: we have tasks in spawn list, but nothing to wait in reactor
             modtrace!(
                 self.tracer,
-                "Rt: poll phase no tasks in reactor (will check spawn list or channels)"
+                "runtime: poll phase no tasks in reactor (will check spawn list or channels)"
             );
             return None;
         }

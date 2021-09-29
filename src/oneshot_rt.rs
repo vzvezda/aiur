@@ -235,7 +235,7 @@ impl InnerOneshotRt {
 
         modtrace!(
             self.tracer,
-            "OneshotRt: {:?} state {:?} -> {:?} ({})",
+            "oneshot_rt: {:?} state {:?} -> {:?} ({})",
             oneshot_id,
             old,
             self.nodes[idx],
@@ -245,7 +245,7 @@ impl InnerOneshotRt {
         if self.nodes[idx].can_be_dropped() {
             modtrace!(
                 self.tracer,
-                "OneshotRt: remove {:?} from idx {}",
+                "oneshot_rt: remove {:?} from idx {}",
                 oneshot_id,
                 idx
             );
@@ -265,7 +265,7 @@ impl InnerOneshotRt {
 
         modtrace!(
             self.tracer,
-            "OneshotRt: {:?} state {:?} -> {:?} ({})",
+            "oneshot_rt: {:?} state {:?} -> {:?} ({})",
             oneshot_id,
             old,
             self.nodes[idx],
@@ -276,7 +276,7 @@ impl InnerOneshotRt {
             self.nodes.remove(idx);
             modtrace!(
                 self.tracer,
-                "OneshotRt: remove {:?} from idx {}",
+                "oneshot_rt: remove {:?} from idx {}",
                 oneshot_id,
                 idx
             );
@@ -300,7 +300,7 @@ impl InnerOneshotRt {
         };
         modtrace!(
             self.tracer,
-            "OneshotRt: {:?} state {:?} -> {:?} ({})",
+            "oneshot_rt: {:?} state {:?} -> {:?} ({})",
             oneshot_id,
             old,
             self.nodes[idx],
@@ -449,7 +449,7 @@ impl InnerOneshotRt {
         let tx_data = std::mem::transmute::<*mut (), *mut Option<T>>(tx_data);
         let rx_data = std::mem::transmute::<*mut (), *mut Option<T>>(rx_data);
         std::mem::swap(&mut *tx_data, &mut *rx_data);
-        modtrace!(tracer, "OneshotRt: exchange<T> mem::swap() just happened");
+        modtrace!(tracer, "oneshot_rt: exchange<T> mem::swap() just happened");
     }
 
     pub(crate) unsafe fn exchange<T>(&mut self, oneshot_id: OneshotId) -> bool {

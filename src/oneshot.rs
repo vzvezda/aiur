@@ -7,10 +7,10 @@ use std::marker::{PhantomData, PhantomPinned};
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
-use crate::tracer::Tracer;
 use crate::oneshot_rt::OneshotId;
 use crate::reactor::{EventId, GetEventId, Reactor};
 use crate::runtime::Runtime;
+use crate::tracer::Tracer;
 
 // enable/disable output of modtrace! macro
 const MODTRACE: bool = true;
@@ -104,7 +104,7 @@ impl<'runtime, T, ReactorT: Reactor> SenderOnce<'runtime, T, ReactorT> {
     }
 
     /// Sends value to the receiver side of the channel. If receiver end is already closed,
-    /// the original value returned as error in result. 
+    /// the original value returned as error in result.
     pub async fn send(&mut self, value: T) -> Result<(), T> {
         let prev = std::mem::replace(&mut self.inner, SenderInner::Sent(PhantomData));
 
@@ -160,7 +160,7 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
     fn set_state(&mut self, new_state: PeerFutureState) {
         modtrace!(
             self.tracer(),
-            "Oneshot/SenderFuture: {:?} state {:?} -> {:?}",
+            "oneshot_sender_future: {:?} state {:?} -> {:?}",
             self.runtime_channel.oneshot_id(),
             self.state,
             new_state
@@ -205,7 +205,7 @@ impl<'runtime, T, ReactorT: Reactor> Future for SenderFuture<'runtime, T, Reacto
     fn poll(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Self::Output> {
         modtrace!(
             self.tracer(),
-            "Oneshot/SenderFuture::poll() {:?}",
+            "oneshot_sender_future: in the poll() {:?}",
             self.runtime_channel.oneshot_id()
         );
         let event_id = self.get_event_id();
@@ -218,7 +218,7 @@ impl<'runtime, T, ReactorT: Reactor> Future for SenderFuture<'runtime, T, Reacto
             PeerFutureState::Created => this.transmit(&ctx.waker(), event_id), // always Pending
             PeerFutureState::Exchanging => this.close(event_id),
             PeerFutureState::Closed => {
-                panic!("aiur: oneshot::SenderFuture was polled after completion.")
+                panic!("aiur/oneshot_sender_future: was polled after completion.")
             }
         };
     }
@@ -226,7 +226,7 @@ impl<'runtime, T, ReactorT: Reactor> Future for SenderFuture<'runtime, T, Reacto
 
 impl<'runtime, T, ReactorT: Reactor> Drop for SenderFuture<'runtime, T, ReactorT> {
     fn drop(&mut self) {
-        modtrace!(self.tracer(), "Oneshot/SenderFuture::drop()");
+        modtrace!(self.tracer(), "oneshot_sender_future: drop()");
         self.runtime_channel.cancel_sender();
     }
 }
@@ -263,7 +263,7 @@ impl<'runtime, T, ReactorT: Reactor> RecverOnce<'runtime, T, ReactorT> {
     fn set_state(&mut self, new_state: PeerFutureState) {
         modtrace!(
             self.tracer(),
-            "Oneshot/ReceiverFuture: state {:?} -> {:?}",
+            "oneshot_recver_future: state {:?} -> {:?}",
             self.state,
             new_state
         );
@@ -301,7 +301,7 @@ impl<'runtime, T, ReactorT: Reactor> RecverOnce<'runtime, T, ReactorT> {
 
 impl<'runtime, T, ReactorT: Reactor> Drop for RecverOnce<'runtime, T, ReactorT> {
     fn drop(&mut self) {
-        modtrace!(self.tracer(), "Oneshot/ReceiverFuture::drop()");
+        modtrace!(self.tracer(), "oneshot_recver_future: in the drop()");
         self.runtime_channel.cancel_receiver();
     }
 }
@@ -311,7 +311,7 @@ impl<'runtime, T, ReactorT: Reactor> Future for RecverOnce<'runtime, T, ReactorT
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Self::Output> {
         let event_id = self.get_event_id();
-        modtrace!(self.tracer(), "Oneshot/ReceiverFuture::poll()");
+        modtrace!(self.tracer(), "oneshot_recver_future: in the poll()");
 
         // Unsafe usage: this function does not moves out data from self, as required by
         // Pin::map_unchecked_mut().
@@ -321,7 +321,7 @@ impl<'runtime, T, ReactorT: Reactor> Future for RecverOnce<'runtime, T, ReactorT
             PeerFutureState::Created => this.transmit(&ctx.waker(), event_id), // always Pending
             PeerFutureState::Exchanging => this.close(event_id),
             PeerFutureState::Closed => {
-                panic!("aiur: oneshot::ReceiverFuture was polled after completion.")
+                panic!("aiur/oneshot_recver_future: was polled after completion.")
             }
         };
     }
