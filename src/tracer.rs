@@ -11,8 +11,9 @@ pub struct Tracer {
 }
 
 fn local_print(_data: usize, args: Arguments) {
-    // todo: avoid dynamic memory
-    println!("{}", args.to_string());
+    // We can improve to avoid dynamic memory, but this function currently only used for
+    // testing.
+    println!("aiur/{}", args.to_string());
 }
 
 fn local_nothing(_data: usize, _args: Arguments) {}
