@@ -1,9 +1,9 @@
 [package]
 name = "aiur"
 description = "Single threaded async executor with structured concurrency"
-version = "0.0.4"
+version = "0.0.5"
 authors = ["Vladimir Zvezda"]
-edition = "2018"
+edition = "2021"
 license = "MIT"
 keywords = ["async", "executor"]
 categories = ["asynchronous"]
