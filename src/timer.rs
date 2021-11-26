@@ -13,7 +13,7 @@ use crate::GetEventId;
 use crate::Runtime;
 use crate::TemporalReactor;
 
-/// Performs async sleep.
+/// Performs the async sleep.
 ///
 /// This function requires reactor with timer operations implemented according to
 /// [TemporalReactor] trait. Sleeping used intensively in tests of this crate.
@@ -22,6 +22,8 @@ use crate::TemporalReactor;
 pub async fn sleep<ReactorT: TemporalReactor>(rt: &Runtime<ReactorT>, duration: Duration) {
     TimerFuture::new(rt, duration).await
 }
+
+// The rest code is private TimerFuture implementation
 
 // Possible states for the timer future.
 enum TimerState {
