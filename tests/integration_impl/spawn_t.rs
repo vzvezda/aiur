@@ -157,7 +157,7 @@ fn two_concurrent_timers_works() {
 }
 
 // Verify spawn in a linear pattern works. Linear pattern is when an async function spawns
-// another async funciton which in turn spawn any async function, etc up to some depth.
+// another async function which in turn spawn any async function, etc up to some depth.
 //
 // [spawn] - [spawn] - [...] - [spawn] - [sleep 1s]
 #[test]
@@ -175,7 +175,7 @@ fn spawn_linear_works() {
         let elapsed = rt.io().now32() - start;
 
         assert!(elapsed >= 1 * 1000);
-        assert!(elapsed < 1 * 1000 + THRESHOLD_MS); // use a threashold to avoid false alarms
+        assert!(elapsed < 1 * 1000 + THRESHOLD_MS); // use a threshold to avoid false alarms
     }
 
     async fn deep_dive(rt: &toy_rt::Runtime, depth: u32, counter: &MutCounter) {
@@ -211,7 +211,7 @@ fn nodes_in_tree(children: u32, depth: u32) -> u32 {
 //    ...
 //
 //    So there may be a lot of task spawned, but the total duration of the test should be like 1
-//    second, because all tasks make the sleep paralel.
+//    second, because all tasks make their sleeps in parallel.
 #[test]
 fn spawn_tree_works() {
     use measure::MutCounter;

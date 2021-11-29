@@ -302,6 +302,40 @@ where
         self.awoken.itask_ptr.get().unwrap()
     }
 
+    // Experemental
+    pub fn nested_loop<FutureT>(&self, future: FutureT)
+    where
+        FutureT: Future<Output = ()>,
+    {
+        let task: *mut (dyn ITask) = self.spawn(future);
+        modtrace!(self.tracer(), "runtime: nested loop for task: {:?}", task);
+
+        loop {
+            self.spawn_phase();
+
+            // task can be completed on spawn with first poll
+            if unsafe { (*task).is_completed() } {
+                break;
+            }
+
+            self.jump_phase();
+
+            if unsafe { (*task).is_completed() } {
+                break;
+            }
+
+            self.poll_phase();
+            if unsafe { (*task).is_completed() } {
+                break;
+            }
+        }
+        modtrace!(
+            self.tracer(),
+            "runtime: exit nested loop for task: {:?}",
+            task
+        );
+    }
+
     /// Used by a leaf feature in poll() method to verify if it was the reason the parent future
     /// was awoken.
     pub fn is_awoken(&self, event_id: EventId) -> bool {
