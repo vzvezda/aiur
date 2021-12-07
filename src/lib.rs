@@ -47,10 +47,13 @@
 #[macro_use]
 mod modtrace_macro;
 
+mod any_of;
 mod channel;
 mod channel_rt;
+mod join;
 mod oneshot;
 mod oneshot_rt;
+mod pin_macro;
 mod reactor;
 mod runtime;
 mod scope;
@@ -61,7 +64,11 @@ mod with_runtime;
 
 pub mod toy_rt;
 
+pub use any_of::AnyOfN;
+pub use any_of::{any_of2, any_of3, any_of4, any_of5, any_of6, any_of7, any_of8};
+pub use any_of::{OneOf2, OneOf3, OneOf4, OneOf5, OneOf6, OneOf7, OneOf8};
 pub use channel::{channel, Recver, Sender};
+pub use join::join4;
 pub use oneshot::{oneshot, RecverOnce, SenderOnce};
 pub use reactor::{EventId, GetEventId, Reactor, TemporalReactor};
 pub use runtime::Runtime;
@@ -81,6 +88,17 @@ macro_rules! export_runtime {
         pub type EventId = $crate::EventId;
         pub use $crate::sleep;
         pub use $crate::GetEventId;
+
+        // joins
+        pub use $crate::join4;
+        // any_of
+        pub use $crate::make_any_of;
+        pub use $crate::pinned_any_of;
+        pub use $crate::AnyOfN;
+        pub use $crate::{any_of2, any_of3, any_of4, any_of5, any_of6, any_of7, any_of8};
+        pub use $crate::{OneOf2, OneOf3, OneOf4, OneOf5, OneOf6, OneOf7, OneOf8};
+
+        pub use $crate::pin_local;
 
         pub type RecverOnce<'runtime, T> = $crate::RecverOnce<'runtime, T, $reactor>;
         pub type SenderOnce<'runtime, T> = $crate::SenderOnce<'runtime, T, $reactor>;
