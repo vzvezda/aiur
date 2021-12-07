@@ -3,7 +3,6 @@
 // |' | '|   (c) 2020 - present, Vladimir Zvezda
 //   / \
 //
-
 // Use the toy runtime
 use aiur::toy_rt::{self};
 
