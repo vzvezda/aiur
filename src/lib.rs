@@ -41,7 +41,6 @@
 //!   * structured concurrency
 //!   * async destruction
 //!   * nostd
-//!   * scoped access to API
 //!
 
 #[macro_use]
@@ -56,7 +55,6 @@ mod oneshot_rt;
 mod pin_macro;
 mod reactor;
 mod runtime;
-mod scope;
 mod task;
 mod timer;
 mod tracer;
@@ -72,7 +70,6 @@ pub use join::{join2, join3, join4, join5, join6, join7, join8};
 pub use oneshot::{oneshot, RecverOnce, SenderOnce};
 pub use reactor::{EventId, GetEventId, Reactor, TemporalReactor};
 pub use runtime::Runtime;
-pub use scope::Scope;
 pub use timer::sleep;
 pub use toy_rt::ToyReactor;
 pub use tracer::Tracer;
@@ -84,7 +81,6 @@ pub use with_runtime::{with_runtime_base, LifetimeLinkerFn};
 macro_rules! export_runtime {
     ($reactor:ident) => {
         pub type Runtime = $crate::Runtime<$reactor>;
-        pub type Scope<'runtime> = $crate::Scope<'runtime, $reactor>;
         pub type EventId = $crate::EventId;
         pub use $crate::sleep;
         pub use $crate::GetEventId;

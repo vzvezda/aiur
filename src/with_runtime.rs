@@ -67,5 +67,5 @@ where
     let future = async_function.call(&runtime, init);
 
     // return the result of the execution of the future
-    runtime.block_on(future)
+    runtime.nested_loop(future)
 }

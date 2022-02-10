@@ -92,13 +92,13 @@ fn channel_two_channels_can_coexist() {
             recv2_data: 0,
         };
         {
-            let scope = toy_rt::Scope::new_named(rt, "ScopeForTwoChannels");
             let (tx1, mut rx1) = toy_rt::channel::<u32>(&rt);
             let (tx2, mut rx2) = toy_rt::channel::<u32>(&rt);
-            scope.spawn(writer(tx1, 42));
-            scope.spawn(writer(tx2, 100));
-            state.recv1_data = rx1.next().await.unwrap();
-            state.recv2_data = rx2.next().await.unwrap();
+            toy_rt::join!(writer(tx1, 42), writer(tx2, 100), async {
+                state.recv1_data = rx1.next().await.unwrap();
+                state.recv2_data = rx2.next().await.unwrap();
+            })
+            .await;
         }
         state
     }
@@ -151,12 +151,12 @@ fn channel_drop_recver_with_sender_pinned_gives_error() {
     }
 
     async fn start_async(rt: &toy_rt::Runtime, _: ()) {
-        let scope = toy_rt::Scope::new_named(rt, "start_async");
         let (mut tx, rx) = toy_rt::channel::<u32>(&rt);
-        scope.spawn(reader(rx));
-
-        // verify that sender receiver the value back as error
-        assert_eq!(tx.send(42).await.unwrap_err(), 42);
+        toy_rt::join!(reader(rx), async {
+            // verify that sender receiver the value back as error
+            assert_eq!(tx.send(42).await.unwrap_err(), 42);
+        })
+        .await;
     }
 
     toy_rt::with_runtime_in_mode(SLEEP_MODE, start_async, ());
@@ -173,10 +173,8 @@ fn channel_drop_sender_with_recver_pinned_gives_error() {
     }
 
     async fn start_async(rt: &toy_rt::Runtime, _: ()) {
-        let scope = toy_rt::Scope::new_named(rt, "start_async");
-        let (_tx, rx) = toy_rt::channel::<u32>(&rt);
-        scope.spawn(reader(rx));
-        // dropping _tx
+        let (tx, rx) = toy_rt::channel::<u32>(&rt);
+        toy_rt::join!(reader(rx), async move { drop(tx) }).await;
     }
 
     toy_rt::with_runtime_in_mode(SLEEP_MODE, start_async, ());
@@ -223,6 +221,7 @@ fn channel_echo_server() {
         mut rx: toy_rt::Recver<'runtime, u32>,
     ) {
         while let Ok(value) = rx.next().await {
+            println!("Echo server value {}", value);
             tx.send(value).await.unwrap();
         }
     }
@@ -230,14 +229,22 @@ fn channel_echo_server() {
     async fn echo_client(rt: &toy_rt::Runtime, _: ()) -> AsyncState {
         let mut state = AsyncState { echo_data: 0 };
         {
-            let scope = toy_rt::Scope::new_named(rt, "Echo");
             let (tx1, mut rx1) = toy_rt::channel::<u32>(&rt);
             let (mut tx2, rx2) = toy_rt::channel::<u32>(&rt);
-            scope.spawn(echo_server(tx1, rx2));
-            tx2.send(42).await.unwrap();
-            state.echo_data = rx1.next().await.unwrap();
-            tx2.send(8).await.unwrap();
-            state.echo_data += rx1.next().await.unwrap();
+            toy_rt::join!(echo_server(tx1, rx2), async {
+                println!("Echo client sending 42");
+                tx2.send(42).await.unwrap();
+                println!("Echo client sending 42 ok");
+                state.echo_data = rx1.next().await.unwrap();
+                println!("Echo client recv 42 ok, sending 8");
+                tx2.send(8).await.unwrap();
+                println!("Echo client sending 8 ok");
+                state.echo_data += rx1.next().await.unwrap();
+                println!("Echo client recevied");
+                // need to drop sender to signal to echo_server() that it can exit
+                drop(tx2);
+            })
+            .await;
         }
         state
     }
@@ -259,28 +266,34 @@ fn channel_many_channel_many_senders_actually_works() {
     }
 
     async fn accumulate(rt: &toy_rt::Runtime, name: &'static str) {
-        let scope = toy_rt::Scope::new_named(rt, name);
         let (tx, mut rx) = toy_rt::channel::<u32>(&rt);
-        scope.spawn(generate(tx.clone()));
-        scope.spawn(generate(tx.clone()));
-        scope.spawn(generate(tx.clone()));
-        drop(tx);
+        toy_rt::join!(
+            generate(tx.clone()),
+            generate(tx.clone()),
+            generate(tx.clone()),
+            async {
+                drop(tx);
 
-        let mut accum = 0;
-        while let Ok(value) = rx.next().await {
-            accum += value;
-        }
+                let mut accum = 0;
+                while let Ok(value) = rx.next().await {
+                    accum += value;
+                }
 
-        assert_eq!(accum, 30);
+                assert_eq!(accum, 30);
+            }
+        )
+        .await;
     }
 
     async fn start_multi_senders(rt: &toy_rt::Runtime, _: ()) {
         // Each accumulate is 1 recv + 3 senders
         {
-            let scope = toy_rt::Scope::new_named(rt, "parent");
-            scope.spawn(accumulate(rt, "accum1"));
-            scope.spawn(accumulate(rt, "accum3"));
-            scope.spawn(accumulate(rt, "accum2"));
+            toy_rt::join!(
+                accumulate(rt, "accum1"),
+                accumulate(rt, "accum3"),
+                accumulate(rt, "accum2")
+            )
+            .await;
         }
     }
 
