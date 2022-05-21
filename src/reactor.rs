@@ -10,7 +10,7 @@ use std::time::Duration;
 ///
 /// External crate implements the trait to create a Runtime with both executor and reactor.
 pub trait Reactor {
-    /// The only method Runtime need from reactor is to wait for I/O to complete.
+    /// The only method Runtime needs from the reactor is to wait for I/O to complete.
     fn wait(&self) -> EventId;
 }
 

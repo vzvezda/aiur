@@ -250,6 +250,7 @@ impl ToyReactorImpl {
     }
 
     fn wait(&mut self) -> EventId {
+        println!("toy reactor wait");
         let timer_node = self.get_first_timer_to_wake();
 
         let now32 = self.now32();

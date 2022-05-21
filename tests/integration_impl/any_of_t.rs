@@ -5,6 +5,7 @@
 //
 // Use the toy runtime
 use aiur::toy_rt::{self};
+use super::measure::{self};
 
 use std::time::Duration;
 
@@ -12,19 +13,6 @@ use std::time::Duration;
 // amount of time.
 //const SLEEP_MODE: toy_rt::SleepMode = toy_rt::SleepMode::Actual;
 const SLEEP_MODE: toy_rt::SleepMode = toy_rt::SleepMode::Emulated;
-
-fn assert_duration(actual: u32, expected: u32) {
-    let actual = actual as i64;
-    let expected = expected as i64;
-
-    assert!(
-        i64::abs(actual - expected) < 100,
-        "Duration is in unexpected range: actual: {}, expected: {}, diff: {} > 100",
-        actual,
-        expected,
-        i64::abs(actual - expected)
-    );
-}
 
 // Verifies if any_of2 can be fully consumed in expected order
 #[test]
@@ -52,7 +40,7 @@ fn consume_any_of2() {
         let sequence = measured(rt).await;
         let elapsed = rt.io().now32() - start;
 
-        assert_duration(elapsed, 2000);
+        measure::assert_duration(elapsed, 2000);
         assert_eq!(vec!(1, 2), sequence);
     }
 
@@ -99,7 +87,7 @@ fn consume_any_of8() {
         let sequence = measured(rt).await;
         let elapsed = rt.io().now32() - start;
 
-        assert_duration(elapsed, 8000);
+        measure::assert_duration(elapsed, 8000);
 
         assert_eq!(vec!(8, 7, 6, 5, 4, 3, 2, 1), sequence);
     }

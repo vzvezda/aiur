@@ -8,7 +8,7 @@ use std::future::Future;
 /// Waits concurrently until all futures are completed.
 ///
 ///
-/// Internally it just select the correct `joinN()` function based on the number of agruments
+/// Internally it just select the correct `joinN()` function based on the number of arguments
 /// supplied. For example the `join!(fut1, fut2, fut3).await` is the same as
 /// [`join3`]`(fut1, fut2, fut3).await`.
 ///

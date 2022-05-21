@@ -2,8 +2,8 @@
 //  / * \    aiur: the homeplanet for the famous executors
 // |' | '|   (c) 2020 - present, Vladimir Zvezda
 //   / \
-use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
+use std::cell::Cell;
+use std::cell::RefCell;
 use std::future::Future;
 
 use crate::channel_rt::ChannelRt;
@@ -18,7 +18,7 @@ const MODTRACE: bool = true;
 
 // Info about what the reactor was awoken from: the task and the event.
 pub(crate) struct Awoken {
-    itask_ptr: Cell<Option<*mut dyn ITask>>,
+    itask_ptr: Cell<Option<*const dyn ITask>>,
     event_id: Cell<EventId>,
 }
 
@@ -30,12 +30,31 @@ impl Awoken {
         }
     }
 
-    pub(crate) fn set_awoken_task(&self, itask: *mut dyn ITask) {
+    pub(crate) fn set_awoken_task(&self, itask: *const dyn ITask) {
         self.itask_ptr.set(Some(itask));
     }
 
     pub(crate) fn set_awoken_event(&self, event_id: EventId) {
         self.event_id.set(event_id);
+    }
+
+    pub(crate) fn get_itask_ptr(&self) -> Option<*const dyn ITask> {
+        self.itask_ptr.get()
+    }
+}
+
+#[derive(Copy, Clone)]
+struct FrozenEvent {
+    itask_ptr: *const dyn ITask,
+    event_id: EventId,
+}
+
+impl FrozenEvent {
+    fn new(itask_ptr: *const dyn ITask, event_id: EventId) -> Self {
+        Self {
+            itask_ptr,
+            event_id,
+        }
     }
 }
 
@@ -45,6 +64,7 @@ pub struct Runtime<ReactorT> {
     awoken: Awoken,
     oneshot_rt: OneshotRt,
     channel_rt: ChannelRt,
+    frozen_events: RefCell<Vec<FrozenEvent>>,
     tracer: Tracer,
 }
 
@@ -58,6 +78,7 @@ where
             awoken: Awoken::new(),
             oneshot_rt: OneshotRt::new(&tracer),
             channel_rt: ChannelRt::new(&tracer),
+            frozen_events: RefCell::new(Vec::new()),
             tracer,
         }
     }
@@ -105,17 +126,70 @@ where
         &self.tracer
     }
 
-    fn wait(&self) -> *mut dyn ITask {
-        // Waiting for an event from reactor and save the EventId into awoken. The
-        // itask pointer in the awoken is saved by Waker.wake().
-        self.awoken.set_awoken_event(self.io().wait());
-
-        // return task pointer
-        self.awoken.itask_ptr.get().unwrap()
+    // to create task in
+    pub(crate) fn get_awoken_ptr(&self) -> *const Awoken {
+        &self.awoken
     }
 
+    fn wait(&self) -> *const dyn ITask {
+        // loop because that event from reactor may come for a frozen task
+        loop {
+            // Waiting for an event from reactor. The itask pointer of the task in the awoken is
+            // saved by Waker.wake().
+            let event_id = self.io().wait();
+            let itask_ptr = self.awoken.itask_ptr.get().unwrap();
+
+            unsafe {
+                if (*itask_ptr).is_frozen() {
+                    // we cannot poll the task because it is frozen. Save the event somewhere.
+                    self.save_event_for_frozen_task(itask_ptr, event_id);
+                    continue; // have to wait for another task
+                } else {
+                    // Save the event_id to awoken.
+                    self.awoken.set_awoken_event(event_id);
+
+                    // return task pointer to root task or first unfrozen ancestor
+                    break (*itask_ptr).unfrozen_ancestor();
+                }
+            }
+        }
+    }
+
+    // Saves event from reactor for later
+    fn save_event_for_frozen_task(&self, itask_ptr: *const dyn ITask, event_id: EventId) {
+        self.frozen_events
+            .borrow_mut()
+            .push(FrozenEvent::new(itask_ptr, event_id));
+    }
+
+    // Polls if there is something unfrozen in the list of frozen events
     fn poll_unfrozen(&self) {
-        // todo: find if there is an unfrozen task and poll it
+        // loop until there is something we can find in the list of frozen events
+        while let Some(unfrozen) = self.find_unfrozen_event() {
+            self.awoken.set_awoken_event(unfrozen.event_id);
+            unsafe {
+                (*(*unfrozen.itask_ptr).unfrozen_ancestor()).poll();
+            }
+        }
+    }
+
+    // Scans the frozen events array if there is an event for task that unfrozen right now.
+    // Removes such event from frozen_events array.
+    fn find_unfrozen_event(&self) -> Option<FrozenEvent> {
+        let mut vec = self.frozen_events.borrow_mut();
+
+        let found = vec
+            .iter()
+            .enumerate()
+            .find(|d| !unsafe { (*(d.1.itask_ptr)).is_frozen() });
+
+        if let Some((position, frozen_event)) = found {
+            let frozen_event = *frozen_event; // please the brwchk
+            vec.remove(position);
+            Some(frozen_event)
+        } else {
+            None
+        }
     }
 
     // Experemental
@@ -126,13 +200,16 @@ where
         // Put a future in a task and pin the task
         let task = Task::new(future, &self.awoken);
         pin_local!(task);
+        task.on_pinned(); // assign self-references
+
+        // Forget &mut Task here and user only &task
+        let task = task.as_ref();
 
         modtrace!(self.tracer(), "runtime: nested loop for task");
 
-        // Prepare the task once it pinned and polls the future once to give it chance
-        // to schedule its i/o in reactor. It is possible that start() would make
-        // some other nested_loop().
-        task.start();
+        // Polls the future once to give it chance to schedule its i/o in reactor. It
+        // is possible that this poll() call would make some other nested_loop().
+        task.poll();
 
         while !task.is_completed() {
             self.poll_unfrozen();

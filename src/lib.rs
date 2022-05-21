@@ -50,6 +50,7 @@ mod any_of;
 mod channel;
 mod channel_rt;
 mod join;
+mod join_tasks;
 mod oneshot;
 mod oneshot_rt;
 mod pin_macro;
@@ -62,11 +63,15 @@ mod with_runtime;
 
 pub mod toy_rt;
 
+pub use any_of::any_task2;
 pub use any_of::AnyOfN;
 pub use any_of::{any_of2, any_of3, any_of4, any_of5, any_of6, any_of7, any_of8};
 pub use any_of::{OneOf2, OneOf3, OneOf4, OneOf5, OneOf6, OneOf7, OneOf8};
 pub use channel::{channel, Recver, Sender};
 pub use join::{join2, join3, join4, join5, join6, join7, join8};
+pub use join_tasks::{
+    join_task2, join_task3, join_task4, join_task5, join_task6, join_task7, join_task8,
+};
 pub use oneshot::{oneshot, RecverOnce, SenderOnce};
 pub use reactor::{EventId, GetEventId, Reactor, TemporalReactor};
 pub use runtime::Runtime;
@@ -86,9 +91,15 @@ macro_rules! export_runtime {
         pub use $crate::GetEventId;
 
         // joins
-        pub use $crate::{join2, join3, join4, join5, join6, join7, join8};
         pub use $crate::join;
+        pub use $crate::join_task;
+        pub use $crate::{join2, join3, join4, join5, join6, join7, join8};
+        pub use $crate::{
+            join_task2, join_task3, join_task4, join_task5, join_task6, join_task7, join_task8,
+        };
+
         // any_of
+        pub use $crate::any_task2;
         pub use $crate::make_any_of;
         pub use $crate::pinned_any_of;
         pub use $crate::AnyOfN;

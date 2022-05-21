@@ -3,7 +3,7 @@
 // |' | '|   (c) 2020 - present, Vladimir Zvezda
 //   / \
 //
-// Tests for join!() macro
+// Tests for join_tasks!() macro
 // Use the toy runtime
 use aiur::toy_rt::{self};
 use super::measure::{self};
@@ -17,7 +17,7 @@ const SLEEP_MODE: toy_rt::SleepMode = toy_rt::SleepMode::Emulated;
 
 // Verifies if any_of2 can be fully consumed in expected order
 #[test]
-fn join2_returns_tupple() {
+fn join_task2_returns_tupple() {
     // a future to join: sleep for given duration and return the given number
     async fn sleep_and_ret(rt: &toy_rt::Runtime, duration: Duration, value: u32) -> u32 {
         toy_rt::sleep(rt, duration).await;
@@ -26,7 +26,7 @@ fn join2_returns_tupple() {
 
     async fn measured(rt: &toy_rt::Runtime) -> Vec<u32> {
         // Invoke join on features that sleeps different time and return different numbers
-        let res = toy_rt::join!(
+        let res = toy_rt::join_task2(rt, 
             sleep_and_ret(rt, Duration::from_millis(1000), 1),
             sleep_and_ret(rt, Duration::from_millis(2000), 2),
         )
@@ -50,7 +50,7 @@ fn join2_returns_tupple() {
 }
 
 #[test]
-fn join8_returns_tupple() {
+fn join_task8_returns_tupple() {
     // a future to join: sleep for given duration and return the given number
     async fn sleep_and_ret(rt: &toy_rt::Runtime, duration: Duration, value: u32) -> u32 {
         toy_rt::sleep(rt, duration).await;
@@ -58,8 +58,9 @@ fn join8_returns_tupple() {
     }
 
     async fn measured(rt: &toy_rt::Runtime) -> Vec<u32> {
-        let res = toy_rt::join!(
+        let res = toy_rt::join_task!(
             // Invoke join on features that sleeps different time and return different numbers
+            rt,
             sleep_and_ret(rt, Duration::from_millis(1000), 1),
             sleep_and_ret(rt, Duration::from_millis(2000), 2),
             sleep_and_ret(rt, Duration::from_millis(3000), 3),

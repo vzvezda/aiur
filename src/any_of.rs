@@ -6,6 +6,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use crate::task::ITask;
+
 /// Used as result of [AnyOfN::next()] for two futures.
 pub enum OneOf2<T1, T2> {
     First(T1),
@@ -112,6 +114,31 @@ impl<TupleT> AnyOfN<TupleT> {
                     *active &= !active_flag;
                     Some(result)
                 }
+            }
+        } else {
+            None // this future is no longer active
+        }
+    }
+
+    // Shared code to poll task
+    fn task_poll_n<FutT: Future>(
+        ctx: &mut Context,
+        n: u8,
+        task: &mut Task<FutT>,
+        active: &mut u8,
+    ) -> Option<FutT::Output> {
+        let active_flag: u8 = 1 << n;
+
+        if *active & active_flag != 0 {
+            task.assign_parent(ctx);
+            task.poll();
+            if task.is_completed() {
+                // Done, clean the bit and return future result
+                *active &= !active_flag;
+                Some(task.take_result())
+            } else {
+                // Future is still in progress
+                None
             }
         } else {
             None // this future is no longer active
@@ -951,4 +978,87 @@ macro_rules! pinned_any_of {
         let $var = $crate::any_of8($f1, $f2, $f3, $f4, $f5, $f6, $f7, $f8);
         $crate::pin_local!($var);
     };
+}
+
+//////////////////////////k
+
+use crate::task::Task;
+use crate::{Reactor, Runtime};
+
+/// Task Tupple is a type that supposed to hide Task from public interface
+pub struct TaskTupple2<FutT1: Future, FutT2: Future>(Task<FutT1>, Task<FutT2>);
+
+impl<FutT1, FutT2> AnyOfN<TaskTupple2<FutT1, FutT2>>
+where
+    FutT1: Future,
+    FutT2: Future,
+{
+    /// Returns the result of the first completed future or None if all futures of the stream
+    /// has been completed.
+    pub async fn next(self: &mut Pin<&mut Self>) -> Option<OneOf2<FutT1::Output, FutT2::Output>> {
+        let this = unsafe { self.as_mut().get_unchecked_mut() };
+        (NextOfN { any: this }).await
+    }
+}
+
+impl<FutT1, FutT2> AnyOfN<TaskTupple2<FutT1, FutT2>>
+where
+    FutT1: Future,
+    FutT2: Future,
+{
+    fn task_poll_f1(&mut self, ctx: &mut Context) -> Option<FutT1::Output> {
+        Self::task_poll_n(ctx, 0, &mut self.fs.0, &mut self.active)
+    }
+    fn task_poll_f2(&mut self, ctx: &mut Context) -> Option<FutT2::Output> {
+        Self::task_poll_n(ctx, 1, &mut self.fs.1, &mut self.active)
+    }
+}
+
+impl<'any, FutT1, FutT2> Future for NextOfN<'any, TaskTupple2<FutT1, FutT2>>
+where
+    FutT1: Future,
+    FutT2: Future,
+{
+    type Output = Option<OneOf2<FutT1::Output, FutT2::Output>>;
+
+    fn poll(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+
+        // ?? how do we know the context of parent task? The ctx can be the context of root,
+        // not the first parent.
+
+        if this.any.is_done() {
+            dbg!("at2: done");
+            Poll::Ready(None)
+        } else if let Some(x) = this.any.task_poll_f1(ctx) {
+            dbg!("at2: ready1");
+            Poll::Ready(Some(OneOf2::First(x)))
+        } else if let Some(x) = this.any.task_poll_f2(ctx) {
+            dbg!("at2: ready2");
+            Poll::Ready(Some(OneOf2::Second(x)))
+        } else {
+            dbg!("at2: pending");
+            Poll::Pending
+        }
+    }
+}
+
+/// Creates the [AnyOfN] stream to poll two tasks.
+#[must_use = "futures do nothing unless you `.await` or poll them"]
+pub fn any_task2<ReactorT: Reactor, FutT1, FutT2>(
+    rt: &Runtime<ReactorT>,
+    f1: FutT1,
+    f2: FutT2,
+) -> AnyOfN<TaskTupple2<FutT1, FutT2>>
+where
+    FutT1: Future,
+    FutT2: Future,
+{
+    AnyOfN {
+        fs: TaskTupple2(
+            Task::new(f1, rt.get_awoken_ptr()),
+            Task::new(f2, rt.get_awoken_ptr()),
+        ),
+        active: 0b0011,
+    }
 }
