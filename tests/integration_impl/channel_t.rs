@@ -3,7 +3,7 @@
 // |' | '|   (c) 2020 - present, Vladimir Zvezda
 //   / \
 //
-// This module contains channel tests via publically exposed API. There is also private API unit
+// This module contains channel tests via publicly exposed API. There is also private API unit
 // tests for channel in crate.
 
 // Use the toy runtime
@@ -16,12 +16,9 @@ use aiur::toy_rt::{self};
 //const SLEEP_MODE: toy_rt::SleepMode = toy_rt::SleepMode::Actual;
 const SLEEP_MODE: toy_rt::SleepMode = toy_rt::SleepMode::Emulated;
 
-// Spawns a task and send a channel value from parent to child tasks.
-#[cfg(disable_this_for_a_while = "mut")]
+// Simple tests that send values from sender to reader.
 #[test]
 fn channel_works() {
-    // !! This does not currently works, access_violation because of the Vec in
-    // the state. There is an issue in github for it #23
     struct AsyncState {
         recv_data: Vec<u32>,
     }
@@ -40,12 +37,18 @@ fn channel_works() {
             recv_data: Vec::new(),
         };
         {
-            let scope = toy_rt::Scope::new_named(rt, "ChannelWorks");
             let (mut tx, rx) = toy_rt::channel::<u32>(&rt);
-            scope.spawn(reader(rx, &mut state));
-            for i in 0..10u32 {
-                tx.send(i).await.unwrap();
-            }
+
+            toy_rt::join!(
+                async {
+                    for i in 0..10u32 {
+                        tx.send(i).await.unwrap();
+                    }
+                    drop(tx); // drop sender to stop the reader()'s cycle
+                },
+                reader(rx, &mut state)
+            )
+            .await;
         }
         state
     }
