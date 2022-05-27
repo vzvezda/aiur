@@ -26,9 +26,9 @@ fn trivial_nested_loop() {
 
 // Verifies that join of two tasks actually executes two futures in parallel
 #[test]
-fn join_task2() {
+fn join_tasks2() {
     async fn measured(rt: &toy_rt::Runtime) -> Vec<u32> {
-        let (v1, v2) = toy_rt::join_task2(
+        let (v1, v2) = toy_rt::join_tasks2(
             rt,
             measure::sleep_and_ret(rt, Duration::from_millis(1000), 1),
             measure::sleep_and_ret(rt, Duration::from_millis(2000), 2),
@@ -51,13 +51,13 @@ fn join_task2() {
 // join_task2---Sleep(1s)
 //            \-NestedLoop(Sleep(2s)
 #[test]
-fn nested_loop_in_join_task2() {
+fn nested_loop_in_join_tasks2() {
     async fn frozable(rt: &toy_rt::Runtime) -> u32 {
         rt.nested_loop(measure::sleep_and_ret(rt, Duration::from_millis(2000), 2))
     }
 
     async fn measured(rt: &toy_rt::Runtime) -> Vec<u32> {
-        let (v1, v2) = toy_rt::join_task2(
+        let (v1, v2) = toy_rt::join_tasks2(
             rt,
             measure::sleep_and_ret(rt, Duration::from_millis(1000), 1),
             frozable(rt),

@@ -11,34 +11,34 @@ use std::task::{Context, Poll};
 
 /// Waits concurrently until all futures are completed as tasks.
 ///
-/// Internally it just select the correct `join_taskN()` function based on the number of arguments
-/// supplied. For example the `join_task!(fut1, fut2, fut3).await` is the same as
-/// [`join_task3`]`(fut1, fut2, fut3).await`.
+/// Internally it just select the correct `join_tasksN()` function based on the number of arguments
+/// supplied. For example the `join_tasks!(rt, fut1, fut2, fut3).await` is the same as
+/// [`join_tasks3`]`(rt, fut1, fut2, fut3).await`.
 ///
 /// Please note that unlike join implementation in other crates this one returns future and
 /// requires `.await` to start execution.
 #[macro_export]
-macro_rules! join_task {
+macro_rules! join_tasks {
     ($r:expr, $f1:expr, $f2:expr $(,)?) => {
-        $crate::join_task2($r, $f1, $f2)
+        $crate::join_tasks2($r, $f1, $f2)
     };
     ($r:expr, $f1:expr, $f2:expr, $f3:expr $(,)?) => {
-        $crate::join_task3($r, $f1, $f2, $f3)
+        $crate::join_tasks3($r, $f1, $f2, $f3)
     };
     ($r:expr, $f1:expr, $f2:expr, $f3:expr, $f4:expr $(,)?) => {
-        $crate::join_task4($r, $f1, $f2, $f3, $f4)
+        $crate::join_tasks4($r, $f1, $f2, $f3, $f4)
     };
     ($r:expr, $f1:expr, $f2:expr, $f3:expr, $f4:expr, $f5:expr $(,)?) => {
-        $crate::join_task5($r, $f1, $f2, $f3, $f4, $f5)
+        $crate::join_tasks5($r, $f1, $f2, $f3, $f4, $f5)
     };
     ($r:expr, $f1:expr, $f2:expr, $f3:expr, $f4:expr, $f5:expr, $f6:expr $(,)?) => {
-        $crate::join_task6($r, $f1, $f2, $f3, $f4, $f5, $f6)
+        $crate::join_tasks6($r, $f1, $f2, $f3, $f4, $f5, $f6)
     };
     ($r:expr, $f1:expr, $f2:expr, $f3:expr, $f4:expr, $f5:expr, $f6:expr, $f7:expr $(,)?) => {
-        $crate::join_task7($r, $f1, $f2, $f3, $f4, $f5, $f6, $f7)
+        $crate::join_tasks7($r, $f1, $f2, $f3, $f4, $f5, $f6, $f7)
     };
     ($r:expr, $f1:expr, $f2:expr, $f3:expr, $f4:expr, $f5:expr, $f6:expr, $f7:expr, $f8:expr $(,)?) => {
-        $crate::join_task8($r, $f1, $f2, $f3, $f4, $f5, $f6, $f7, $f8)
+        $crate::join_tasks8($r, $f1, $f2, $f3, $f4, $f5, $f6, $f7, $f8)
     };
 }
 
@@ -457,7 +457,7 @@ where
     }
 }
 
-// Leaf future impl for use in join_taskN() functions.
+// Leaf future impl for use in join_tasksN() functions.
 struct TaskJoin<TaskStorageT: TaskStorage> {
     storage: TaskStorageT,
 }
@@ -486,7 +486,7 @@ impl<TaskStorageT: TaskStorage> Future for TaskJoin<TaskStorageT> {
 
 /// Polls two futures concurrently as tasks until both are completed.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub async fn join_task2<ReactorT, FutT1, FutT2>(
+pub async fn join_tasks2<ReactorT, FutT1, FutT2>(
     rt: &Runtime<ReactorT>,
     f1: FutT1,
     f2: FutT2,
@@ -506,7 +506,7 @@ where
 
 /// Polls three futures concurrently as tasks until both are completed.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub async fn join_task3<ReactorT, FutT1, FutT2, FutT3>(
+pub async fn join_tasks3<ReactorT, FutT1, FutT2, FutT3>(
     rt: &Runtime<ReactorT>,
     f1: FutT1,
     f2: FutT2,
@@ -532,7 +532,7 @@ where
 
 /// Polls four futures concurrently as tasks until both are completed.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub async fn join_task4<ReactorT, FutT1, FutT2, FutT3, FutT4>(
+pub async fn join_tasks4<ReactorT, FutT1, FutT2, FutT3, FutT4>(
     rt: &Runtime<ReactorT>,
     f1: FutT1,
     f2: FutT2,
@@ -561,7 +561,7 @@ where
 
 /// Polls five futures concurrently as tasks until both are completed.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub async fn join_task5<ReactorT, FutT1, FutT2, FutT3, FutT4, FutT5>(
+pub async fn join_tasks5<ReactorT, FutT1, FutT2, FutT3, FutT4, FutT5>(
     rt: &Runtime<ReactorT>,
     f1: FutT1,
     f2: FutT2,
@@ -599,7 +599,7 @@ where
 
 /// Polls six futures concurrently as tasks until both are completed.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub async fn join_task6<ReactorT, FutT1, FutT2, FutT3, FutT4, FutT5, FutT6>(
+pub async fn join_tasks6<ReactorT, FutT1, FutT2, FutT3, FutT4, FutT5, FutT6>(
     rt: &Runtime<ReactorT>,
     f1: FutT1,
     f2: FutT2,
@@ -641,7 +641,7 @@ where
 
 /// Polls seven futures concurrently as tasks until both are completed.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub async fn join_task7<ReactorT, FutT1, FutT2, FutT3, FutT4, FutT5, FutT6, FutT7>(
+pub async fn join_tasks7<ReactorT, FutT1, FutT2, FutT3, FutT4, FutT5, FutT6, FutT7>(
     rt: &Runtime<ReactorT>,
     f1: FutT1,
     f2: FutT2,
@@ -687,7 +687,7 @@ where
 
 /// Polls eight futures concurrently as tasks until both are completed.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub async fn join_task8<ReactorT, FutT1, FutT2, FutT3, FutT4, FutT5, FutT6, FutT7, FutT8>(
+pub async fn join_tasks8<ReactorT, FutT1, FutT2, FutT3, FutT4, FutT5, FutT6, FutT7, FutT8>(
     rt: &Runtime<ReactorT>,
     f1: FutT1,
     f2: FutT2,

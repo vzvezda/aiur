@@ -26,7 +26,7 @@ fn join_task2_returns_tupple() {
 
     async fn measured(rt: &toy_rt::Runtime) -> Vec<u32> {
         // Invoke join on features that sleeps different time and return different numbers
-        let res = toy_rt::join_task2(rt, 
+        let res = toy_rt::join_tasks2(rt, 
             sleep_and_ret(rt, Duration::from_millis(1000), 1),
             sleep_and_ret(rt, Duration::from_millis(2000), 2),
         )
@@ -58,7 +58,7 @@ fn join_task8_returns_tupple() {
     }
 
     async fn measured(rt: &toy_rt::Runtime) -> Vec<u32> {
-        let res = toy_rt::join_task!(
+        let res = toy_rt::join_tasks!(
             // Invoke join on features that sleeps different time and return different numbers
             rt,
             sleep_and_ret(rt, Duration::from_millis(1000), 1),

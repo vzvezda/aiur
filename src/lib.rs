@@ -70,7 +70,7 @@ pub use any_of::{OneOf2, OneOf3, OneOf4, OneOf5, OneOf6, OneOf7, OneOf8};
 pub use channel::{channel, Recver, Sender};
 pub use join::{join2, join3, join4, join5, join6, join7, join8};
 pub use join_tasks::{
-    join_task2, join_task3, join_task4, join_task5, join_task6, join_task7, join_task8,
+    join_tasks2, join_tasks3, join_tasks4, join_tasks5, join_tasks6, join_tasks7, join_tasks8,
 };
 pub use oneshot::{oneshot, RecverOnce, SenderOnce};
 pub use reactor::{EventId, GetEventId, Reactor, TemporalReactor};
@@ -92,10 +92,11 @@ macro_rules! export_runtime {
 
         // joins
         pub use $crate::join;
-        pub use $crate::join_task;
+        pub use $crate::join_tasks;
         pub use $crate::{join2, join3, join4, join5, join6, join7, join8};
         pub use $crate::{
-            join_task2, join_task3, join_task4, join_task5, join_task6, join_task7, join_task8,
+            join_tasks2, join_tasks3, join_tasks4, join_tasks5, join_tasks6, join_tasks7,
+            join_tasks8,
         };
 
         // any_of
