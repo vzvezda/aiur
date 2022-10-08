@@ -63,7 +63,6 @@ mod with_runtime;
 
 pub mod toy_rt;
 
-pub use any_of::any_task2;
 pub use any_of::AnyOfN;
 pub use any_of::{any_of2, any_of3, any_of4, any_of5, any_of6, any_of7, any_of8};
 pub use any_of::{OneOf2, OneOf3, OneOf4, OneOf5, OneOf6, OneOf7, OneOf8};
@@ -100,7 +99,6 @@ macro_rules! export_runtime {
         };
 
         // any_of
-        pub use $crate::any_task2;
         pub use $crate::make_any_of;
         pub use $crate::pinned_any_of;
         pub use $crate::AnyOfN;
