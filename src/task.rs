@@ -7,8 +7,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
-use crate::runtime::Awoken;
-
 // Unlike std::task::Poll there is also have a Frozen state meaning that task cannot
 // be polled right now because it mutually borrowed somewhere. Also the Ready result
 // does not have value, it should be extracted by take_result() in a right level of
@@ -41,7 +39,6 @@ where
 }
 
 struct WakerData {
-    awoken: *const Awoken,
     itask_ptr: Cell<Option<*const dyn ITask>>,
 }
 
@@ -49,10 +46,9 @@ impl<FutT> Task<FutT>
 where
     FutT: Future,
 {
-    pub fn new(future: FutT, awoken: *const Awoken) -> Self {
+    pub fn new(future: FutT) -> Self {
         Self {
             waker_data: WakerData {
-                awoken,
                 itask_ptr: Cell::new(None),
             },
             future: RefCell::new(future),
@@ -96,7 +92,7 @@ where
     // Extracts the ITask from context and assign this as parent
     pub fn assign_parent(&self, ctx: &Context<'_>) -> bool {
         if self.parent.get().is_none() {
-            self.parent.set(Some(self.get_task_from_context(ctx)));
+            self.parent.set(Some(waker_as_task_ptr(&ctx.waker())));
 
             // We need to erase Future lifetime bound. This is up to the nested_loop() to ensure
             // that references in Future do not outlive the objects.
@@ -114,12 +110,6 @@ where
         }
     }
 
-    fn get_task_from_context(&self, ctx: &Context<'_>) -> *const dyn ITask {
-        // Invoking waker.wake() makes saves ITask into Awoken
-        ctx.waker().wake_by_ref();
-        unsafe { (*(self.waker_data.awoken)).get_itask_ptr().unwrap() }
-    }
-
     // Make std::task::Waker from Task, which is basically a pointer to header.
     fn as_waker(&self) -> std::task::Waker {
         // Cloning the waker returns just the copy of the pointer.
@@ -134,11 +124,8 @@ where
         }
 
         // Wake the future by ref
-        unsafe fn wake_by_ref_impl(raw_waker_ptr: *const ()) {
-            let waker_data = &*(raw_waker_ptr as *const WakerData);
-            let awoken: &Awoken = &*waker_data.awoken;
-            // Runtime receives the pointer to future that was waken
-            awoken.set_awoken_task(waker_data.itask_ptr.get().unwrap());
+        unsafe fn wake_by_ref_impl(_raw_waker_ptr: *const ()) {
+            panic!("aiur: Don't use Waker.wake(), use waker_as_task_ptr()");
         }
 
         // Drop the waker
@@ -153,6 +140,24 @@ where
         );
 
         unsafe { Waker::from_raw(raw_waker) }
+    }
+}
+
+// 
+pub(crate) fn waker_as_task_ptr(waker: &Waker) -> *const dyn ITask {
+    // Waiting for "waker_getters" unstable feature, meantime solve this by awful transmutes
+
+    // Copy of RawWaker struct
+    struct RawWakerLayout {
+        data: *const (),
+        _vtable: &'static RawWakerVTable,
+    }
+
+    unsafe {
+        let raw_waker = std::mem::transmute::<*const Waker, *const RawWaker>(&*waker);
+        let raw_waker = std::mem::transmute::<*const RawWaker, *const RawWakerLayout>(raw_waker);
+        let waker_data = (*raw_waker).data as *const WakerData;
+        (*waker_data).itask_ptr.get().unwrap()
     }
 }
 

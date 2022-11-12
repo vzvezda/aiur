@@ -29,7 +29,6 @@ fn trivial_nested_loop() {
 fn join_tasks2() {
     async fn measured(rt: &toy_rt::Runtime) -> Vec<u32> {
         let (v1, v2) = toy_rt::join_tasks2(
-            rt,
             measure::sleep_and_ret(rt, Duration::from_millis(1000), 1),
             measure::sleep_and_ret(rt, Duration::from_millis(2000), 2),
         )
@@ -58,7 +57,6 @@ fn nested_loop_in_join_tasks2() {
 
     async fn measured(rt: &toy_rt::Runtime) -> Vec<u32> {
         let (v1, v2) = toy_rt::join_tasks2(
-            rt,
             measure::sleep_and_ret(rt, Duration::from_millis(1000), 1),
             frozable(rt),
         )

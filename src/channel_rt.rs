@@ -3,7 +3,6 @@
 // |' | '|   (c) 2020 - present, Vladimir Zvezda
 //   / \
 use std::cell::RefCell;
-use std::task::Waker;
 
 use crate::reactor::EventId;
 use crate::tracer::Tracer;
@@ -31,7 +30,7 @@ pub(crate) enum SwapResult {
 
 // Both sender and receiver has almost the same API which is in this trait.
 pub(crate) trait PeerRt {
-    fn pin(&self, waker: &Waker, event_id: EventId, pointer: *mut ());
+    fn pin(&self, event_id: EventId, pointer: *mut ());
     fn unpin(&self, event_id: EventId);
     fn close(&self);
 
@@ -52,9 +51,9 @@ impl<'rt> SenderRt<'rt> {
 }
 
 impl<'rt> PeerRt for SenderRt<'rt> {
-    fn pin(&self, waker: &Waker, event_id: EventId, pointer: *mut ()) {
+    fn pin(&self, event_id: EventId, pointer: *mut ()) {
         self.channel_rt
-            .add_sender_fut(self.channel_id, waker.clone(), event_id, pointer)
+            .add_sender_fut(self.channel_id, event_id, pointer)
     }
     fn unpin(&self, event_id: EventId) {
         self.channel_rt.cancel_sender_fut(self.channel_id, event_id)
@@ -75,9 +74,9 @@ pub(crate) struct RecverRt<'rt> {
 }
 
 impl<'rt> PeerRt for RecverRt<'rt> {
-    fn pin(&self, waker: &Waker, event_id: EventId, pointer: *mut ()) {
+    fn pin(&self, event_id: EventId, pointer: *mut ()) {
         self.channel_rt
-            .reg_receiver_fut(self.channel_id, waker.clone(), event_id, pointer)
+            .reg_receiver_fut(self.channel_id, event_id, pointer)
     }
     fn unpin(&self, _event_id: EventId) {
         self.channel_rt.cancel_receiver_fut(self.channel_id)
@@ -127,32 +126,31 @@ impl ChannelRt {
         self.inner.borrow().is_exist(channel_id)
     }
 
-    pub(crate) fn awake_and_get_event_id(&self) -> Option<EventId> {
-        self.inner.borrow_mut().awake_and_get_event_id()
+    
+    pub(crate) fn get_awake_event_id(&self) -> Option<EventId> {
+        self.inner.borrow_mut().get_awake_event_id()
     }
 
     fn add_sender_fut(
         &self,
         channel_id: ChannelId,
-        waker: Waker,
         event_id: EventId,
         data: *mut (),
     ) {
         self.inner
             .borrow_mut()
-            .add_sender_fut(channel_id, waker, event_id, data);
+            .add_sender_fut(channel_id, event_id, data);
     }
 
     fn reg_receiver_fut(
         &self,
         channel_id: ChannelId,
-        waker: Waker,
         event_id: EventId,
         data: *mut (),
     ) {
         self.inner
             .borrow_mut()
-            .reg_receiver_fut(channel_id, waker, event_id, data);
+            .reg_receiver_fut(channel_id, event_id, data);
     }
 
     unsafe fn swap_sender<T>(&self, channel_id: ChannelId) -> SwapResult {
@@ -190,15 +188,13 @@ impl ChannelRt {
 #[derive(Debug, Clone)]
 struct RegInfo {
     data: *mut (),
-    waker: Waker,
     event_id: EventId,
 }
 
 impl RegInfo {
-    fn new(data: *mut (), waker: Waker, event_id: EventId) -> Self {
+    fn new(data: *mut (), event_id: EventId) -> Self {
         RegInfo {
             data,
-            waker,
             event_id,
         }
     }
@@ -214,7 +210,6 @@ enum RxState {
 // This is a state for senders
 struct TxState {
     completion: TxCompletion,
-    waker: Waker,
     event_id: EventId,
 }
 
@@ -227,7 +222,6 @@ impl TxState {
     fn new(reg_info: RegInfo) -> Self {
         Self {
             completion: TxCompletion::Pinned(reg_info.data),
-            waker: reg_info.waker,
             event_id: reg_info.event_id,
         }
     }
@@ -243,21 +237,18 @@ enum Peer {
 
 struct WakeEvent {
     peer: Peer,
-    waker: Waker,
     event_id: EventId,
 }
 
 impl WakeEvent {
-    fn new(peer: Peer, waker: Waker, event_id: EventId) -> Self {
+    fn new(peer: Peer, event_id: EventId) -> Self {
         Self {
             peer,
-            waker,
             event_id,
         }
     }
 
-    fn wake(&self) -> EventId {
-        self.waker.wake_by_ref();
+    fn get_event_id(&self) -> EventId {
         self.event_id
     }
 }
@@ -365,7 +356,7 @@ impl ChannelNode {
     }
 
     // This is the implementation for the runtime if this ChannelNode ready to produce any
-    // event. It does not awake waker by itself.
+    // event. 
     fn get_wake_event(&self) -> Option<WakeEvent> {
         // Verify if there is a sender future that just got its data transferred to a receiver,
         // that should be awoken. It does not matter in what state the receiver is.
@@ -373,7 +364,6 @@ impl ChannelNode {
             if let TxCompletion::Emptied = first_tx_state.completion {
                 return Some(WakeEvent::new(
                     Peer::Sender,
-                    first_tx_state.waker.clone(),
                     first_tx_state.event_id,
                 ));
             }
@@ -398,7 +388,6 @@ impl ChannelNode {
                 // receive ChannelClosed err (no alive senders)
                 return Some(WakeEvent::new(
                     Peer::Receiver,
-                    rx_reg_info.waker.clone(),
                     rx_reg_info.event_id,
                 ));
             }
@@ -421,7 +410,6 @@ impl ChannelNode {
                 TxCompletion::Pinned(..) => {
                     return Some(WakeEvent::new(
                         Peer::Sender,
-                        first_tx_state.waker.clone(),
                         first_tx_state.event_id,
                     ));
                 }
@@ -662,11 +650,10 @@ impl InnerChannelRt {
     fn add_sender_fut(
         &mut self,
         channel_id: ChannelId,
-        waker: Waker,
         event_id: EventId,
         data: *mut (),
     ) {
-        let reg_info = RegInfo::new(data, waker, event_id);
+        let reg_info = RegInfo::new(data, event_id);
         let tracer = self.tracer.clone();
         self.get_node_mut(channel_id)
             .add_sender_future(reg_info, &tracer);
@@ -675,12 +662,11 @@ impl InnerChannelRt {
     fn reg_receiver_fut(
         &mut self,
         channel_id: ChannelId,
-        waker: Waker,
         event_id: EventId,
         data: *mut (),
     ) {
         let tracer = self.tracer.clone();
-        let reg_info = RegInfo::new(data, waker, event_id);
+        let reg_info = RegInfo::new(data, event_id);
         self.get_node_mut(channel_id)
             .reg_recv_future(reg_info, &tracer);
     }
@@ -705,10 +691,10 @@ impl InnerChannelRt {
 
     // Awakes the waker and returns its EventId
     fn get_event_id_for_node(node: &ChannelNode) -> Option<EventId> {
-        node.get_wake_event().map(|ev| ev.wake())
+        node.get_wake_event().map(|ev| ev.get_event_id())
     }
 
-    fn awake_and_get_event_id(&mut self) -> Option<EventId> {
+    fn get_awake_event_id(&mut self) -> Option<EventId> {
         self.nodes
             .iter()
             .find_map(|node| Self::get_event_id_for_node(&node))
@@ -761,42 +747,10 @@ mod tests {
     // API tests here. These tests below helped me to develop the InnerChannelRt.
     use super::*;
 
-    // This creates std::task::Waker that can be used for testing Channel Runtime API. This
-    // waker is kind of fake it will not awake anything, but good enough for testing.
-    fn create_fake_waker(ptr: *const ()) -> std::task::Waker {
-        use std::task::{RawWaker, RawWakerVTable};
-        // Cloning the waker returns just the copy of the pointer.
-        unsafe fn clone_impl(raw_waker_ptr: *const ()) -> RawWaker {
-            // Just copy the pointer, which is works as a clone
-            RawWaker::new(raw_waker_ptr, &FAKE_WAKER_TABLE)
-        }
-
-        // Wake the future
-        unsafe fn wake_impl(raw_waker_ptr: *const ()) {
-            wake_by_ref_impl(raw_waker_ptr);
-        }
-
-        // Wake the future by ref
-        unsafe fn wake_by_ref_impl(_raw_waker_ptr: *const ()) {
-            // nothing here, this waker does not awake anything
-        }
-
-        // Drop the waker
-        unsafe fn drop_impl(_raw_waker_ptr: *const ()) {}
-
-        const FAKE_WAKER_TABLE: RawWakerVTable =
-            RawWakerVTable::new(clone_impl, wake_impl, wake_by_ref_impl, drop_impl);
-
-        let raw_waker = RawWaker::new(ptr, &FAKE_WAKER_TABLE);
-
-        unsafe { Waker::from_raw(raw_waker) }
-    }
-
     // Unified code for SenderEmu and RecverEmu
     struct PeerEmu<PeerT: PeerRt> {
         peer_rt: PeerT,
         event_id: EventId,
-        waker: Waker,
         ptr: *mut (),
     }
 
@@ -807,7 +761,7 @@ mod tests {
     // Most of the code for sender and receiver are the same when using PeerRt trait
     impl<PeerT: PeerRt> PeerEmu<PeerT> {
         fn register(&self) {
-            self.peer_rt.pin(&self.waker, self.event_id, self.ptr);
+            self.peer_rt.pin(self.event_id, self.ptr);
         }
 
         fn cancel(&self) {
@@ -846,7 +800,6 @@ mod tests {
             Self {
                 peer_rt: crt.sender_rt(channel_id),
                 event_id: EventId(ptr),
-                waker: create_fake_waker(ptr),
                 ptr,
             }
         }
@@ -859,7 +812,6 @@ mod tests {
             Self {
                 peer_rt: crt.recver_rt(channel_id),
                 event_id: EventId(ptr),
-                waker: create_fake_waker(ptr),
                 ptr,
             }
         }
@@ -885,12 +837,12 @@ mod tests {
         assert!(crt.is_exist(channel_id));
         crt.inc_sender(channel_id);
         assert!(crt.is_exist(channel_id));
-        assert!(crt.awake_and_get_event_id().is_none());
+        assert!(crt.get_awake_event_id().is_none());
         crt.dec_sender(channel_id);
-        assert!(crt.awake_and_get_event_id().is_none());
+        assert!(crt.get_awake_event_id().is_none());
         assert!(crt.is_exist(channel_id));
         crt.close_receiver(channel_id);
-        assert!(crt.awake_and_get_event_id().is_none());
+        assert!(crt.get_awake_event_id().is_none());
         assert!(!crt.is_exist(channel_id));
     }
 
@@ -912,16 +864,16 @@ mod tests {
         let mut recver = RecverEmu::new(&crt, channel_id, &mut recver);
 
         recver.register();
-        assert!(crt.awake_and_get_event_id().is_none());
+        assert!(crt.get_awake_event_id().is_none());
         sender.register();
 
         unsafe {
             // receiver awoken and have got the right value after exchange
-            recver.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &Some(100));
+            recver.assert_completion(crt.get_awake_event_id(), SwapResult::Done, &Some(100));
             recver.clear_storage();
 
             // verifies that sender is awoken and had value taken out after exchange
-            sender.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &None);
+            sender.assert_completion(crt.get_awake_event_id(), SwapResult::Done, &None);
         }
 
         drop(sender);
@@ -947,20 +899,20 @@ mod tests {
         let recver = RecverEmu::new(&crt, channel_id, &mut recver);
 
         sender.register();
-        assert!(crt.awake_and_get_event_id().is_none());
+        assert!(crt.get_awake_event_id().is_none());
         recver.register();
 
         unsafe {
             assert!(crt.is_exist(channel_id));
 
             // verify if receiver is awoken
-            recver.assert_event(crt.awake_and_get_event_id());
+            recver.assert_event(crt.get_awake_event_id());
             drop(recver); // instead of exchange just close the receiver
 
             // Sender now awoken with exchange result to be disconnected and value
             // still on senders side.
             sender.assert_completion(
-                crt.awake_and_get_event_id(),
+                crt.get_awake_event_id(),
                 SwapResult::Disconnected,
                 &Some(100),
             );
@@ -990,27 +942,27 @@ mod tests {
         let mut recver = RecverEmu::new(&crt, channel_id, &mut recver);
 
         recver.register();
-        assert!(crt.awake_and_get_event_id().is_none());
+        assert!(crt.get_awake_event_id().is_none());
 
         sender1.register();
         sender2.register();
 
         unsafe {
             // receiver awoken and have got the right value after exchange
-            recver.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &Some(100));
+            recver.assert_completion(crt.get_awake_event_id(), SwapResult::Done, &Some(100));
             recver.clear_storage();
 
             // verifies that sender is awoken and had value taken out after exchange
-            sender1.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &None);
+            sender1.assert_completion(crt.get_awake_event_id(), SwapResult::Done, &None);
 
             // prepare sender once again
             recver.register();
 
             // receiver awoken and have got the right value after exchange
-            recver.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &Some(50));
+            recver.assert_completion(crt.get_awake_event_id(), SwapResult::Done, &Some(50));
 
             // verifies that sender is awoken and had value taken out after exchange
-            sender2.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &None);
+            sender2.assert_completion(crt.get_awake_event_id(), SwapResult::Done, &None);
         }
     }
 
@@ -1034,14 +986,14 @@ mod tests {
         let mut recver = RecverEmu::new(&crt, channel_id, &mut recver);
 
         recver.register();
-        assert!(crt.awake_and_get_event_id().is_none());
+        assert!(crt.get_awake_event_id().is_none());
 
         sender1.register();
         sender2.register();
 
         unsafe {
             // receiver awoken and have got the right value after exchange
-            recver.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &Some(100));
+            recver.assert_completion(crt.get_awake_event_id(), SwapResult::Done, &Some(100));
             recver.clear_storage();
 
             sender1.cancel();
@@ -1051,10 +1003,10 @@ mod tests {
             recver.register();
 
             // receiver awoken and have got the right value after exchange
-            recver.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &Some(50));
+            recver.assert_completion(crt.get_awake_event_id(), SwapResult::Done, &Some(50));
 
             // verifies that sender is awoken and had value taken out after exchange
-            sender2.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &None);
+            sender2.assert_completion(crt.get_awake_event_id(), SwapResult::Done, &None);
         }
     }
 
@@ -1077,14 +1029,14 @@ mod tests {
         let mut recver = RecverEmu::new(&crt, channel_id, &mut recver);
 
         recver.register();
-        assert!(crt.awake_and_get_event_id().is_none());
+        assert!(crt.get_awake_event_id().is_none());
 
         sender1.register();
         sender2.register();
 
         unsafe {
             // receiver awoken and have got the right value after exchange
-            recver.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &Some(100));
+            recver.assert_completion(crt.get_awake_event_id(), SwapResult::Done, &Some(100));
             recver.clear_storage();
 
             // cancel and drop the queued sender [Exch, Pin <- this one]
@@ -1092,7 +1044,7 @@ mod tests {
             drop(sender2);
 
             // verifies that sender is awoken and had value taken out after exchange
-            sender1.assert_completion(crt.awake_and_get_event_id(), SwapResult::Done, &None);
+            sender1.assert_completion(crt.get_awake_event_id(), SwapResult::Done, &None);
         }
     }
 }

@@ -49,6 +49,7 @@ mod modtrace_macro;
 mod any_of;
 mod channel;
 mod channel_rt;
+mod event_node;
 mod join;
 mod join_tasks;
 mod oneshot;
@@ -67,12 +68,13 @@ pub use any_of::AnyOfN;
 pub use any_of::{any_of2, any_of3, any_of4, any_of5, any_of6, any_of7, any_of8};
 pub use any_of::{OneOf2, OneOf3, OneOf4, OneOf5, OneOf6, OneOf7, OneOf8};
 pub use channel::{channel, Recver, Sender};
+pub use event_node::EventNode;
 pub use join::{join2, join3, join4, join5, join6, join7, join8};
 pub use join_tasks::{
     join_tasks2, join_tasks3, join_tasks4, join_tasks5, join_tasks6, join_tasks7, join_tasks8,
 };
 pub use oneshot::{oneshot, RecverOnce, SenderOnce};
-pub use reactor::{EventId, GetEventId, Reactor, TemporalReactor};
+pub use reactor::{EventId, Reactor, TemporalReactor};
 pub use runtime::Runtime;
 pub use timer::sleep;
 pub use toy_rt::ToyReactor;
@@ -87,7 +89,7 @@ macro_rules! export_runtime {
         pub type Runtime = $crate::Runtime<$reactor>;
         pub type EventId = $crate::EventId;
         pub use $crate::sleep;
-        pub use $crate::GetEventId;
+        pub use $crate::EventNode;
 
         // joins
         pub use $crate::join;

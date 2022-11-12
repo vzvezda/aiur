@@ -40,7 +40,6 @@ macro_rules! join {
 }
 
 /// Polls two futures concurrently until both are completed.
-#[must_use = "futures do nothing unless you `.await` or poll them"]
 pub async fn join2<FutT1, FutT2>(f1: FutT1, f2: FutT2) -> (FutT1::Output, FutT2::Output)
 where
     FutT1: Future,
@@ -61,7 +60,6 @@ where
 }
 
 /// Polls three futures concurrently until all are completed.
-#[must_use = "futures do nothing unless you `.await` or poll them"]
 pub async fn join3<FutT1, FutT2, FutT3>(
     f1: FutT1,
     f2: FutT2,
@@ -90,7 +88,6 @@ where
 }
 
 /// Polls four futures concurrently until all are completed.
-#[must_use = "futures do nothing unless you `.await` or poll them"]
 pub async fn join4<FutT1, FutT2, FutT3, FutT4>(
     f1: FutT1,
     f2: FutT2,
@@ -127,7 +124,6 @@ where
 }
 
 /// Polls five futures concurrently until all are completed.
-#[must_use = "futures do nothing unless you `.await` or poll them"]
 pub async fn join5<FutT1, FutT2, FutT3, FutT4, FutT5>(
     f1: FutT1,
     f2: FutT2,
@@ -174,7 +170,6 @@ where
 }
 
 /// Polls six futures concurrently until all are completed.
-#[must_use = "futures do nothing unless you `.await` or poll them"]
 pub async fn join6<FutT1, FutT2, FutT3, FutT4, FutT5, FutT6>(
     f1: FutT1,
     f2: FutT2,
@@ -226,7 +221,6 @@ where
 }
 
 /// Polls seven futures concurrently until all are completed.
-#[must_use = "futures do nothing unless you `.await` or poll them"]
 pub async fn join7<FutT1, FutT2, FutT3, FutT4, FutT5, FutT6, FutT7>(
     f1: FutT1,
     f2: FutT2,
@@ -283,7 +277,6 @@ where
 }
 
 /// Polls eight futures concurrently until all are completed.
-#[must_use = "futures do nothing unless you `.await` or poll them"]
 pub async fn join8<FutT1, FutT2, FutT3, FutT4, FutT5, FutT6, FutT7, FutT8>(
     f1: FutT1,
     f2: FutT2,

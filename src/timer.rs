@@ -3,15 +3,13 @@
 // |' | '|   (c) 2020 - present, Vladimir Zvezda
 //   / \
 use std::future::Future;
-use std::marker::PhantomPinned;
 use std::pin::Pin;
-use std::task::{Context, Poll, Waker};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
-use crate::EventId;
-use crate::GetEventId;
 use crate::Runtime;
 use crate::TemporalReactor;
+use crate::{EventNode, EventId};
 
 /// Performs the async sleep.
 ///
@@ -36,7 +34,7 @@ enum TimerState {
 struct TimerFuture<'runtime, ReactorT: TemporalReactor> {
     rt: &'runtime Runtime<ReactorT>,
     state: TimerState,
-    _pin: PhantomPinned, // making safe to use GetEventId
+    event_node: EventNode,
 }
 
 impl<'rt, ReactorT: TemporalReactor> TimerFuture<'rt, ReactorT> {
@@ -44,26 +42,26 @@ impl<'rt, ReactorT: TemporalReactor> TimerFuture<'rt, ReactorT> {
         TimerFuture {
             rt,
             state: TimerState::Created { duration },
-            _pin: PhantomPinned,
+            event_node: EventNode::new(),
         }
     }
 
     // Schedules the timer in the reactor.
-    fn schedule(&mut self, waker: Waker, event_id: EventId, duration: Duration) -> Poll<()> {
+    fn schedule(&mut self, event_id: EventId, duration: Duration) -> Poll<()> {
         // Timer in has to be in "Created" state, so we cannot schedule the timer twice.
         debug_assert!(matches!(self.state, TimerState::Created { .. }));
 
         self.state = TimerState::Scheduled;
-        self.rt.io().schedule_timer(waker, event_id, duration);
+        self.rt.io().schedule_timer(event_id, duration);
         Poll::Pending // always pending
     }
 
-    // Verifies in reactor is given timer event is ready
+    // Verifies in reactor if given timer event is ready
     fn verify(&mut self, event_id: EventId) -> Poll<()> {
         // Timer in has to be in "Scheduled" state
         debug_assert!(matches!(self.state, TimerState::Scheduled));
 
-        if self.rt.is_awoken(event_id) {
+        if self.rt.is_awoken_for(event_id) {
             self.state = TimerState::Done;
             Poll::Ready(())
         } else {
@@ -72,8 +70,6 @@ impl<'rt, ReactorT: TemporalReactor> TimerFuture<'rt, ReactorT> {
     }
 }
 
-// This just makes the get_event_id() method in TimerFuture
-impl<'rt, ReactorT: TemporalReactor> GetEventId for TimerFuture<'rt, ReactorT> {}
 
 // Cancels timer event in the reactor.
 impl<'rt, ReactorT: TemporalReactor> Drop for TimerFuture<'rt, ReactorT> {
@@ -84,7 +80,7 @@ impl<'rt, ReactorT: TemporalReactor> Drop for TimerFuture<'rt, ReactorT> {
             TimerState::Scheduled => self
                 .rt
                 .io()
-                .cancel_timer(unsafe { self.get_event_id_unchecked() }),
+                .cancel_timer(self.event_node.get_event_id()),
             _ => (),
         }
     }
@@ -94,17 +90,17 @@ impl<'rt, ReactorT: TemporalReactor> Future for TimerFuture<'rt, ReactorT> {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Self::Output> {
-        let event_id = self.get_event_id();
         // Unsafe usage: this function does not moves out data from self, as required by
-        // Pin::map_unchecked_mut().
+        // Pin::get_unchecked_mut().
         let this = unsafe { self.get_unchecked_mut() };
 
         return match this.state {
             TimerState::Created { duration } => {
-                this.schedule(ctx.waker().clone(), event_id, duration)
+                let event_id = this.event_node.on_pin(ctx);
+                this.schedule(event_id, duration)
             }
-            TimerState::Scheduled => this.verify(event_id),
-            TimerState::Done => Poll::Ready(()),
+            TimerState::Scheduled => this.verify(this.event_node.get_event_id()),
+            TimerState::Done => Poll::Ready(()), // perhaps we should panic instead
         };
     }
 }

@@ -5,7 +5,6 @@
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
-use std::task::Waker;
 use std::time::{Duration, Instant};
 
 use crate::EventId;
@@ -63,10 +62,10 @@ impl Reactor for ToyReactor {
 }
 
 impl TemporalReactor for ToyReactor {
-    fn schedule_timer(&self, waker: Waker, event_id: EventId, duration: Duration) {
+    fn schedule_timer(&self, event_id: EventId, duration: Duration) {
         self.rimpl
             .borrow_mut()
-            .schedule_timer(waker, event_id, duration);
+            .schedule_timer(event_id, duration);
     }
 
     fn cancel_timer(&self, event_id: EventId) {
@@ -78,18 +77,16 @@ impl TemporalReactor for ToyReactor {
 struct TimerNode {
     wake_on: u32,
     event_id: EventId,
-    waker: Waker,
     // The BinaryHeap does not support element deletion, so we just mark if node was
     // deleted. TODO: a more optimal mark mode (e.g. nullable eventid?)
     cancelled: Cell<bool>,
 }
 
 impl TimerNode {
-    fn new(now32: u32, duration: Duration, waker: Waker, event_id: EventId) -> Self {
+    fn new(now32: u32, duration: Duration, event_id: EventId) -> Self {
         TimerNode {
             wake_on: now32 + Self::get_duration_u32(duration),
             event_id,
-            waker,
             cancelled: Cell::new(false),
         }
     }
@@ -195,11 +192,11 @@ impl ToyReactorImpl {
         }
     }
 
-    fn schedule_timer(&mut self, waker: Waker, event_id: EventId, duration: Duration) {
+    fn schedule_timer(&mut self, event_id: EventId, duration: Duration) {
         println!("schedule_timer: {:?}", event_id);
 
         self.timers
-            .push(TimerNode::new(self.now32(), duration, waker, event_id));
+            .push(TimerNode::new(self.now32(), duration, event_id));
     }
 
     fn cancel_timer(&mut self, event_id: EventId) {
@@ -224,7 +221,7 @@ impl ToyReactorImpl {
         self.sleep_mode.now32()
     }
 
-    // Removes a
+    // Removes the timer that first to be awoken
     fn get_first_timer_to_wake(&mut self) -> TimerNode {
         // Let require runtime to invoke wait() only if there something to wait. Runtime
         // knows if there are any active tasks, so it don't invoke wait when there is nothing
@@ -261,7 +258,6 @@ impl ToyReactorImpl {
         }
 
         // Returns the waker and event_id to aiur::Runtime
-        timer_node.waker.wake_by_ref();
         timer_node.event_id
     }
 }

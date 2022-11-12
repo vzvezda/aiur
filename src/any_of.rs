@@ -6,8 +6,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use crate::task::ITask;
-
 /// Used as result of [AnyOfN::next()] for two futures.
 pub enum OneOf2<T1, T2> {
     First(T1),
@@ -86,7 +84,7 @@ pub enum OneOf8<T1, T2, T3, T4, T5, T6, T7, T8> {
 /// only when AnyOfN is dropoped.
 pub struct AnyOfN<TupleT> {
     fs: TupleT, // (Fut1, Fut2, .. FutN)
-    active: u8, // u8 is ok for now
+    active: u8, // bitfield for completed futures, u8 is ok for now
 }
 
 impl<TupleT> AnyOfN<TupleT> {

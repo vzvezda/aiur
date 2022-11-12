@@ -3,12 +3,13 @@
 // |' | '|   (c) 2020 - present, Vladimir Zvezda
 //   / \
 use std::future::Future;
-use std::marker::{PhantomData, PhantomPinned};
+use std::marker::PhantomData;
 use std::pin::Pin;
-use std::task::{Context, Poll, Waker};
+use std::task::{Context, Poll};
 
+use crate::event_node::EventNode;
 use crate::oneshot_rt::OneshotId;
-use crate::reactor::{EventId, GetEventId, Reactor};
+use crate::reactor::{EventId, Reactor};
 use crate::runtime::Runtime;
 use crate::tracer::Tracer;
 
@@ -55,16 +56,16 @@ impl<'runtime, ReactorT: Reactor> RuntimeOneshot<'runtime, ReactorT> {
         RuntimeOneshot { rt, oneshot_id }
     }
 
-    fn reg_sender(&self, waker: &Waker, sender_event_id: EventId, pointer: *mut ()) {
+    fn reg_sender(&self, sender_event_id: EventId, pointer: *mut ()) {
         self.rt
             .oneshots()
-            .reg_sender(self.oneshot_id, waker.clone(), sender_event_id, pointer);
+            .reg_sender(self.oneshot_id, sender_event_id, pointer);
     }
 
-    fn reg_receiver(&self, waker: &Waker, receiver_event_id: EventId, pointer: *mut ()) {
+    fn reg_receiver(&self, receiver_event_id: EventId, pointer: *mut ()) {
         self.rt
             .oneshots()
-            .reg_receiver(self.oneshot_id, waker.clone(), receiver_event_id, pointer);
+            .reg_receiver(self.oneshot_id, receiver_event_id, pointer);
     }
 
     unsafe fn exchange<T>(&self) -> bool {
@@ -139,21 +140,18 @@ enum PeerFutureState {
 // -----------------------------------------------------------------------------------------------
 struct SenderFuture<'runtime, T, ReactorT: Reactor> {
     runtime_channel: RuntimeOneshot<'runtime, ReactorT>,
+    event_node: EventNode,
     data: Option<T>,
     state: PeerFutureState,
-    _pin: PhantomPinned, // we need the &data to be stable while pinned
 }
-
-// This just adds the get_event_id() method to SenderFuture
-impl<'runtime, T, ReactorT: Reactor> GetEventId for SenderFuture<'runtime, T, ReactorT> {}
 
 impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
     fn new(rc: &RuntimeOneshot<'runtime, ReactorT>, value: T) -> Self {
         SenderFuture {
             runtime_channel: RuntimeOneshot::new(rc.rt, rc.oneshot_id),
+            event_node: EventNode::new(),
             data: Some(value),
             state: PeerFutureState::Created,
-            _pin: PhantomPinned,
         }
     }
 
@@ -168,11 +166,10 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
         self.state = new_state;
     }
 
-    fn transmit(&mut self, waker: &Waker, event_id: EventId) -> Poll<Result<(), T>> {
+    fn transmit(&mut self, event_id: EventId) -> Poll<Result<(), T>> {
         self.set_state(PeerFutureState::Exchanging);
 
         self.runtime_channel.reg_sender(
-            waker,
             event_id,
             (&mut self.data) as *mut Option<T> as *mut (),
         );
@@ -181,7 +178,7 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
     }
 
     fn close(&mut self, event_id: EventId) -> Poll<Result<(), T>> {
-        if !self.runtime_channel.rt.is_awoken(event_id) {
+        if !self.runtime_channel.rt.is_awoken_for(event_id) {
             return Poll::Pending; // not our event, ignore the poll
         }
 
@@ -208,15 +205,17 @@ impl<'runtime, T, ReactorT: Reactor> Future for SenderFuture<'runtime, T, Reacto
             "oneshot_sender_future: in the poll() {:?}",
             self.runtime_channel.oneshot_id()
         );
-        let event_id = self.get_event_id();
 
         // Unsafe usage: this function does not moves out data from self, as required by
         // Pin::map_unchecked_mut().
         let this = unsafe { self.get_unchecked_mut() };
 
         return match this.state {
-            PeerFutureState::Created => this.transmit(&ctx.waker(), event_id), // always Pending
-            PeerFutureState::Exchanging => this.close(event_id),
+            PeerFutureState::Created => {
+                let event_id = this.event_node.on_pin(ctx);
+                this.transmit(event_id) // always returns Pending
+            }
+            PeerFutureState::Exchanging => this.close(this.event_node.get_event_id()),
             PeerFutureState::Closed => {
                 panic!("aiur/oneshot_sender_future: was polled after completion.")
             }
@@ -243,20 +242,18 @@ impl<'runtime, T, ReactorT: Reactor> Drop for SenderFuture<'runtime, T, ReactorT
 /// the value from sender.
 pub struct RecverOnce<'runtime, T, ReactorT: Reactor> {
     runtime_channel: RuntimeOneshot<'runtime, ReactorT>,
+    event_node: EventNode,
     state: PeerFutureState,
     data: Option<T>,
-    _pin: PhantomPinned, // we need the &data to be stable while pinned
 }
-
-impl<'runtime, T, ReactorT: Reactor> GetEventId for RecverOnce<'runtime, T, ReactorT> {}
 
 impl<'runtime, T, ReactorT: Reactor> RecverOnce<'runtime, T, ReactorT> {
     fn new(rt: &'runtime Runtime<ReactorT>, oneshot_id: OneshotId) -> Self {
         RecverOnce {
             runtime_channel: RuntimeOneshot::new(rt, oneshot_id),
+            event_node: EventNode::new(),
             state: PeerFutureState::Created,
             data: None,
-            _pin: PhantomPinned,
         }
     }
 
@@ -270,10 +267,9 @@ impl<'runtime, T, ReactorT: Reactor> RecverOnce<'runtime, T, ReactorT> {
         self.state = new_state;
     }
 
-    fn transmit(&mut self, waker: &Waker, event_id: EventId) -> Poll<Result<T, RecvError>> {
+    fn transmit(&mut self, event_id: EventId) -> Poll<Result<T, RecvError>> {
         self.set_state(PeerFutureState::Exchanging);
         self.runtime_channel.reg_receiver(
-            waker,
             event_id,
             (&mut self.data) as *mut Option<T> as *mut (),
         );
@@ -282,7 +278,7 @@ impl<'runtime, T, ReactorT: Reactor> RecverOnce<'runtime, T, ReactorT> {
     }
 
     fn close(&mut self, event_id: EventId) -> Poll<Result<T, RecvError>> {
-        if !self.runtime_channel.rt.is_awoken(event_id) {
+        if !self.runtime_channel.rt.is_awoken_for(event_id) {
             return Poll::Pending;
         }
 
@@ -310,7 +306,6 @@ impl<'runtime, T, ReactorT: Reactor> Future for RecverOnce<'runtime, T, ReactorT
     type Output = Result<T, RecvError>;
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Self::Output> {
-        let event_id = self.get_event_id();
         modtrace!(self.tracer(), "oneshot_recver_future: in the poll()");
 
         // Unsafe usage: this function does not moves out data from self, as required by
@@ -318,8 +313,11 @@ impl<'runtime, T, ReactorT: Reactor> Future for RecverOnce<'runtime, T, ReactorT
         let this = unsafe { self.get_unchecked_mut() };
 
         return match this.state {
-            PeerFutureState::Created => this.transmit(&ctx.waker(), event_id), // always Pending
-            PeerFutureState::Exchanging => this.close(event_id),
+            PeerFutureState::Created => {
+                let event_id = this.event_node.on_pin(ctx);
+                this.transmit(event_id) // always returns Pending
+            }
+            PeerFutureState::Exchanging => this.close(this.event_node.get_event_id()),
             PeerFutureState::Closed => {
                 panic!("aiur/oneshot_recver_future: was polled after completion.")
             }

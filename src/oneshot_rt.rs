@@ -7,14 +7,13 @@
 // visibility (with unsafe's), the exported API is in oneshot.rs module (which is safe).
 //
 // The oneshot runtime support is quite simple: both sender and receiver registers the
-// pointer to the data for exchange and their Waker and EventId:
+// pointer to the data for exchange and their EventId:
 //
-// (Sender<*mut(), EventId, Waker), Receiver<*mut, EventId, Waker>)
+// (Sender<*mut(), EventId), Receiver<*mut, EventId>)
 //
 // As soon as both channel sides has their data registered, runtime wakes the
 // Receiver to get the data, then it wakes the Sender.
 use std::cell::RefCell;
-use std::task::Waker;
 
 use crate::tracer::Tracer;
 use crate::reactor::EventId;
@@ -36,22 +35,20 @@ impl std::fmt::Debug for OneshotId {
 #[derive(Debug, Clone)]
 struct RegInfo {
     data: *mut (),
-    waker: Waker,
     event_id: EventId,
 }
 
 impl RegInfo {
-    fn new(data: *mut (), waker: Waker, event_id: EventId) -> Self {
+    fn new(data: *mut (), event_id: EventId) -> Self {
         RegInfo {
             data,
-            waker,
             event_id,
         }
     }
 }
 
 // Where is a sender or  receiver in the communication phase
-#[derive(Clone)] // Cloning the Waker in aiur does not involve allocation
+#[derive(Clone)] 
 enum PeerState {
     Created,
     Registered(RegInfo),
@@ -159,29 +156,27 @@ impl OneshotRt {
     pub(crate) fn reg_sender(
         &self,
         oneshot_id: OneshotId,
-        waker: Waker,
         event_id: EventId,
         data: *mut (),
     ) {
         self.inner
             .borrow_mut()
-            .reg_sender(oneshot_id, waker, event_id, data);
+            .reg_sender(oneshot_id, event_id, data);
     }
 
     pub(crate) fn reg_receiver(
         &self,
         oneshot_id: OneshotId,
-        waker: Waker,
         event_id: EventId,
         data: *mut (),
     ) {
         self.inner
             .borrow_mut()
-            .reg_receiver(oneshot_id, waker, event_id, data);
+            .reg_receiver(oneshot_id, event_id, data);
     }
 
-    pub(crate) fn awake_and_get_event_id(&self) -> Option<EventId> {
-        self.inner.borrow().awake_and_get_event_id()
+    pub(crate) fn get_awake_event_id(&self) -> Option<EventId> {
+        self.inner.borrow().get_awake_event_id()
     }
 
     pub(crate) unsafe fn exchange<T>(&self, oneshot_id: OneshotId) -> bool {
@@ -317,11 +312,10 @@ impl InnerOneshotRt {
     fn reg_sender(
         &mut self,
         oneshot_id: OneshotId,
-        waker: Waker,
         event_id: EventId,
         data: *mut (),
     ) {
-        let reg_info = RegInfo::new(data, waker, event_id);
+        let reg_info = RegInfo::new(data, event_id);
         self.set_sender(
             oneshot_id,
             PeerState::Registered(reg_info),
@@ -332,11 +326,10 @@ impl InnerOneshotRt {
     fn reg_receiver(
         &mut self,
         oneshot_id: OneshotId,
-        waker: Waker,
         event_id: EventId,
         data: *mut (),
     ) {
-        let reg_info = RegInfo::new(data, waker, event_id);
+        let reg_info = RegInfo::new(data, event_id);
         self.set_receiver(
             oneshot_id,
             PeerState::Registered(reg_info),
@@ -344,9 +337,8 @@ impl InnerOneshotRt {
         );
     }
 
-    // Scans all nodes and if there is a oneshot that ready to await, it makes waker.wake_by_ref()
-    // and returns the event_id.
-    fn awake_and_get_event_id(&self) -> Option<EventId> {
+    // Scans all nodes and if there is a oneshot that ready to awake and returns the event_id.
+    fn get_awake_event_id(&self) -> Option<EventId> {
         self.nodes
             .iter()
             .find_map(|node| Self::get_event_id_for_node(&node))
@@ -384,7 +376,7 @@ impl InnerOneshotRt {
      *   Everything starts from (C,C) and in (D,D) all channel resources are released. (D,D) has
      *   two instances on the diagram above for clarity, but this is the same state.
      *
-     *   awake_and_get_event_id() returns event for the Runtime:
+     *   get_awake_event_id() returns event for the Runtime:
      *      * returns None when state is described in parentheses, for example (C,C)
      *      * the curly brace means sender or receiver should be awoken (R,R} - awake
      *        the receiver side. In response to the awake, the channel future is expected
@@ -407,7 +399,6 @@ impl InnerOneshotRt {
         // Registered or Dropped are ok.
         match &node.receiver {
             PeerState::Registered(ref rx_reg_info) => {
-                rx_reg_info.waker.wake_by_ref();
                 return Some(rx_reg_info.event_id);
             }
             _ => (),
@@ -417,7 +408,6 @@ impl InnerOneshotRt {
         // Exhanged or Dropped are ok.
         match &node.sender {
             PeerState::Registered(ref tx_reg_info) => {
-                tx_reg_info.waker.wake_by_ref();
                 return Some(tx_reg_info.event_id);
             }
             _ => (),
@@ -433,7 +423,7 @@ impl InnerOneshotRt {
                 _ => true,
             },
             concat!(
-                "aiur: oneshot::awake_and_get_event_id() invoked in unexpected state. ",
+                "aiur: oneshot::get_awake_event_id() invoked in unexpected state. ",
                 "Sender: {:?}, receiver: {:?}"
             ),
             node.sender,

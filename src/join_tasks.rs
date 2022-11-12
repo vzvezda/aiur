@@ -3,7 +3,6 @@
 // |' | '|   (c) 2020 - present, Vladimir Zvezda
 //   / \
 use crate::task::{ITask, Task};
-use crate::{Reactor, Runtime};
 
 use std::future::Future;
 use std::pin::Pin;
@@ -19,26 +18,26 @@ use std::task::{Context, Poll};
 /// requires `.await` to start execution.
 #[macro_export]
 macro_rules! join_tasks {
-    ($r:expr, $f1:expr, $f2:expr $(,)?) => {
-        $crate::join_tasks2($r, $f1, $f2)
+    ($f1:expr, $f2:expr $(,)?) => {
+        $crate::join_tasks2($f1, $f2)
     };
-    ($r:expr, $f1:expr, $f2:expr, $f3:expr $(,)?) => {
-        $crate::join_tasks3($r, $f1, $f2, $f3)
+    ($f1:expr, $f2:expr, $f3:expr $(,)?) => {
+        $crate::join_tasks3($f1, $f2, $f3)
     };
-    ($r:expr, $f1:expr, $f2:expr, $f3:expr, $f4:expr $(,)?) => {
-        $crate::join_tasks4($r, $f1, $f2, $f3, $f4)
+    ($f1:expr, $f2:expr, $f3:expr, $f4:expr $(,)?) => {
+        $crate::join_tasks4($f1, $f2, $f3, $f4)
     };
-    ($r:expr, $f1:expr, $f2:expr, $f3:expr, $f4:expr, $f5:expr $(,)?) => {
-        $crate::join_tasks5($r, $f1, $f2, $f3, $f4, $f5)
+    ($f1:expr, $f2:expr, $f3:expr, $f4:expr, $f5:expr $(,)?) => {
+        $crate::join_tasks5($f1, $f2, $f3, $f4, $f5)
     };
-    ($r:expr, $f1:expr, $f2:expr, $f3:expr, $f4:expr, $f5:expr, $f6:expr $(,)?) => {
-        $crate::join_tasks6($r, $f1, $f2, $f3, $f4, $f5, $f6)
+    ($f1:expr, $f2:expr, $f3:expr, $f4:expr, $f5:expr, $f6:expr $(,)?) => {
+        $crate::join_tasks6($f1, $f2, $f3, $f4, $f5, $f6)
     };
-    ($r:expr, $f1:expr, $f2:expr, $f3:expr, $f4:expr, $f5:expr, $f6:expr, $f7:expr $(,)?) => {
-        $crate::join_tasks7($r, $f1, $f2, $f3, $f4, $f5, $f6, $f7)
+    ($f1:expr, $f2:expr, $f3:expr, $f4:expr, $f5:expr, $f6:expr, $f7:expr $(,)?) => {
+        $crate::join_tasks7($f1, $f2, $f3, $f4, $f5, $f6, $f7)
     };
-    ($r:expr, $f1:expr, $f2:expr, $f3:expr, $f4:expr, $f5:expr, $f6:expr, $f7:expr, $f8:expr $(,)?) => {
-        $crate::join_tasks8($r, $f1, $f2, $f3, $f4, $f5, $f6, $f7, $f8)
+    ($f1:expr, $f2:expr, $f3:expr, $f4:expr, $f5:expr, $f6:expr, $f7:expr, $f8:expr $(,)?) => {
+        $crate::join_tasks8($f1, $f2, $f3, $f4, $f5, $f6, $f7, $f8)
     };
 }
 
@@ -485,84 +484,67 @@ impl<TaskStorageT: TaskStorage> Future for TaskJoin<TaskStorageT> {
 }
 
 /// Polls two futures concurrently as tasks until both are completed.
-#[must_use = "futures do nothing unless you `.await` or poll them"]
-pub async fn join_tasks2<ReactorT, FutT1, FutT2>(
-    rt: &Runtime<ReactorT>,
+pub async fn join_tasks2<FutT1, FutT2>(
     f1: FutT1,
     f2: FutT2,
 ) -> (FutT1::Output, FutT2::Output)
 where
-    ReactorT: Reactor,
     FutT1: Future,
     FutT2: Future,
 {
-    let awoken_ptr = rt.get_awoken_ptr();
-
     TaskJoin {
-        storage: (Task::new(f1, awoken_ptr), Task::new(f2, awoken_ptr)),
+        storage: (Task::new(f1), Task::new(f2)),
     }
     .await
 }
 
 /// Polls three futures concurrently as tasks until both are completed.
-#[must_use = "futures do nothing unless you `.await` or poll them"]
-pub async fn join_tasks3<ReactorT, FutT1, FutT2, FutT3>(
-    rt: &Runtime<ReactorT>,
+pub async fn join_tasks3<FutT1, FutT2, FutT3>(
     f1: FutT1,
     f2: FutT2,
     f3: FutT3,
 ) -> (FutT1::Output, FutT2::Output, FutT3::Output)
 where
-    ReactorT: Reactor,
     FutT1: Future,
     FutT2: Future,
     FutT3: Future,
 {
-    let awoken_ptr = rt.get_awoken_ptr();
-
     TaskJoin {
         storage: (
-            Task::new(f1, awoken_ptr),
-            Task::new(f2, awoken_ptr),
-            Task::new(f3, awoken_ptr),
+            Task::new(f1),
+            Task::new(f2),
+            Task::new(f3),
         ),
     }
     .await
 }
 
 /// Polls four futures concurrently as tasks until both are completed.
-#[must_use = "futures do nothing unless you `.await` or poll them"]
-pub async fn join_tasks4<ReactorT, FutT1, FutT2, FutT3, FutT4>(
-    rt: &Runtime<ReactorT>,
+pub async fn join_tasks4<FutT1, FutT2, FutT3, FutT4>(
     f1: FutT1,
     f2: FutT2,
     f3: FutT3,
     f4: FutT4,
 ) -> (FutT1::Output, FutT2::Output, FutT3::Output, FutT4::Output)
 where
-    ReactorT: Reactor,
     FutT1: Future,
     FutT2: Future,
     FutT3: Future,
     FutT4: Future,
 {
-    let awoken_ptr = rt.get_awoken_ptr();
-
     TaskJoin {
         storage: (
-            Task::new(f1, awoken_ptr),
-            Task::new(f2, awoken_ptr),
-            Task::new(f3, awoken_ptr),
-            Task::new(f4, awoken_ptr),
+            Task::new(f1),
+            Task::new(f2),
+            Task::new(f3),
+            Task::new(f4),
         ),
     }
     .await
 }
 
 /// Polls five futures concurrently as tasks until both are completed.
-#[must_use = "futures do nothing unless you `.await` or poll them"]
-pub async fn join_tasks5<ReactorT, FutT1, FutT2, FutT3, FutT4, FutT5>(
-    rt: &Runtime<ReactorT>,
+pub async fn join_tasks5<FutT1, FutT2, FutT3, FutT4, FutT5>(
     f1: FutT1,
     f2: FutT2,
     f3: FutT3,
@@ -576,31 +558,26 @@ pub async fn join_tasks5<ReactorT, FutT1, FutT2, FutT3, FutT4, FutT5>(
     FutT5::Output,
 )
 where
-    ReactorT: Reactor,
     FutT1: Future,
     FutT2: Future,
     FutT3: Future,
     FutT4: Future,
     FutT5: Future,
 {
-    let awoken_ptr = rt.get_awoken_ptr();
-
     TaskJoin {
         storage: (
-            Task::new(f1, awoken_ptr),
-            Task::new(f2, awoken_ptr),
-            Task::new(f3, awoken_ptr),
-            Task::new(f4, awoken_ptr),
-            Task::new(f5, awoken_ptr),
+            Task::new(f1),
+            Task::new(f2),
+            Task::new(f3),
+            Task::new(f4),
+            Task::new(f5),
         ),
     }
     .await
 }
 
 /// Polls six futures concurrently as tasks until both are completed.
-#[must_use = "futures do nothing unless you `.await` or poll them"]
-pub async fn join_tasks6<ReactorT, FutT1, FutT2, FutT3, FutT4, FutT5, FutT6>(
-    rt: &Runtime<ReactorT>,
+pub async fn join_tasks6<FutT1, FutT2, FutT3, FutT4, FutT5, FutT6>(
     f1: FutT1,
     f2: FutT2,
     f3: FutT3,
@@ -616,7 +593,6 @@ pub async fn join_tasks6<ReactorT, FutT1, FutT2, FutT3, FutT4, FutT5, FutT6>(
     FutT6::Output,
 )
 where
-    ReactorT: Reactor,
     FutT1: Future,
     FutT2: Future,
     FutT3: Future,
@@ -624,25 +600,21 @@ where
     FutT5: Future,
     FutT6: Future,
 {
-    let awoken_ptr = rt.get_awoken_ptr();
-
     TaskJoin {
         storage: (
-            Task::new(f1, awoken_ptr),
-            Task::new(f2, awoken_ptr),
-            Task::new(f3, awoken_ptr),
-            Task::new(f4, awoken_ptr),
-            Task::new(f5, awoken_ptr),
-            Task::new(f6, awoken_ptr),
+            Task::new(f1),
+            Task::new(f2),
+            Task::new(f3),
+            Task::new(f4),
+            Task::new(f5),
+            Task::new(f6),
         ),
     }
     .await
 }
 
 /// Polls seven futures concurrently as tasks until both are completed.
-#[must_use = "futures do nothing unless you `.await` or poll them"]
-pub async fn join_tasks7<ReactorT, FutT1, FutT2, FutT3, FutT4, FutT5, FutT6, FutT7>(
-    rt: &Runtime<ReactorT>,
+pub async fn join_tasks7<FutT1, FutT2, FutT3, FutT4, FutT5, FutT6, FutT7>(
     f1: FutT1,
     f2: FutT2,
     f3: FutT3,
@@ -660,7 +632,6 @@ pub async fn join_tasks7<ReactorT, FutT1, FutT2, FutT3, FutT4, FutT5, FutT6, Fut
     FutT7::Output,
 )
 where
-    ReactorT: Reactor,
     FutT1: Future,
     FutT2: Future,
     FutT3: Future,
@@ -669,26 +640,22 @@ where
     FutT6: Future,
     FutT7: Future,
 {
-    let awoken_ptr = rt.get_awoken_ptr();
-
     TaskJoin {
         storage: (
-            Task::new(f1, awoken_ptr),
-            Task::new(f2, awoken_ptr),
-            Task::new(f3, awoken_ptr),
-            Task::new(f4, awoken_ptr),
-            Task::new(f5, awoken_ptr),
-            Task::new(f6, awoken_ptr),
-            Task::new(f7, awoken_ptr),
+            Task::new(f1),
+            Task::new(f2),
+            Task::new(f3),
+            Task::new(f4),
+            Task::new(f5),
+            Task::new(f6),
+            Task::new(f7),
         ),
     }
     .await
 }
 
 /// Polls eight futures concurrently as tasks until both are completed.
-#[must_use = "futures do nothing unless you `.await` or poll them"]
-pub async fn join_tasks8<ReactorT, FutT1, FutT2, FutT3, FutT4, FutT5, FutT6, FutT7, FutT8>(
-    rt: &Runtime<ReactorT>,
+pub async fn join_tasks8<FutT1, FutT2, FutT3, FutT4, FutT5, FutT6, FutT7, FutT8>(
     f1: FutT1,
     f2: FutT2,
     f3: FutT3,
@@ -708,7 +675,6 @@ pub async fn join_tasks8<ReactorT, FutT1, FutT2, FutT3, FutT4, FutT5, FutT6, Fut
     FutT8::Output,
 )
 where
-    ReactorT: Reactor,
     FutT1: Future,
     FutT2: Future,
     FutT3: Future,
@@ -718,18 +684,16 @@ where
     FutT7: Future,
     FutT8: Future,
 {
-    let awoken_ptr = rt.get_awoken_ptr();
-
     TaskJoin {
         storage: (
-            Task::new(f1, awoken_ptr),
-            Task::new(f2, awoken_ptr),
-            Task::new(f3, awoken_ptr),
-            Task::new(f4, awoken_ptr),
-            Task::new(f5, awoken_ptr),
-            Task::new(f6, awoken_ptr),
-            Task::new(f7, awoken_ptr),
-            Task::new(f8, awoken_ptr),
+            Task::new(f1),
+            Task::new(f2),
+            Task::new(f3),
+            Task::new(f4),
+            Task::new(f5),
+            Task::new(f6),
+            Task::new(f7),
+            Task::new(f8),
         ),
     }
     .await
