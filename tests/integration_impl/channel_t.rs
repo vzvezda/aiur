@@ -268,7 +268,7 @@ fn channel_many_channel_many_senders_actually_works() {
         }
     }
 
-    async fn accumulate(rt: &toy_rt::Runtime, name: &'static str) {
+    async fn accumulate(rt: &toy_rt::Runtime, _name: &'static str) {
         let (tx, mut rx) = toy_rt::channel::<u32>(&rt);
         toy_rt::join!(
             generate(tx.clone()),

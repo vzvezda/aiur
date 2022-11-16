@@ -99,36 +99,6 @@ fn consequential_sleeps_works() {
     toy_rt::with_runtime_in_mode(SLEEP_MODE, multi_sleep, 1);
 }
 
-mod measure {
-    use std::cell::Cell;
-
-    pub(super) struct MutCounter {
-        counter: Cell<u32>,
-    }
-
-    impl MutCounter {
-        pub(super) fn new(init: u32) -> Self {
-            MutCounter {
-                counter: Cell::new(init),
-            }
-        }
-
-        pub(super) fn inc(&self) {
-            self.counter.set(self.get() + 1);
-        }
-
-        /* currently unused
-        pub(super) fn dec(&self) {
-            self.counter.set(self.get() - 1);
-        }
-        */
-
-        pub(super) fn get(&self) -> u32 {
-            self.counter.get()
-        }
-    }
-}
-
 // Verify that cancellation works
 #[test]
 fn sleep_cancellation_works() {
@@ -155,12 +125,4 @@ fn two_concurrent_timers_works() {
 
     toy_rt::with_runtime_in_mode(SLEEP_MODE, start_concurrent, ());
 }
-
-// Returns how many nodes in a full tree (e.g. all children with nodes)
-fn nodes_in_tree(children: u32, depth: u32) -> u32 {
-    // formula from SO: (N^L-1) / (N-1)
-    (children.pow(depth) - 1) / (children - 1)
-}
-
-
 
