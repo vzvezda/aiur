@@ -5,6 +5,7 @@
 
 pub mod any_of_t;
 pub mod async_drop_t;
+pub mod cancel_frozen_event_t;
 pub mod channel_t;
 pub mod join_t;
 pub mod join_tasks_t;

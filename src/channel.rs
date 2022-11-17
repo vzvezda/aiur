@@ -177,16 +177,14 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
     fn transmit(&mut self, event_id: EventId) -> Poll<Result<(), T>> {
         self.set_state(PeerFutureState::Exchanging);
 
-        self.sender_rt.pin(
-            event_id,
-            (&mut self.data) as *mut Option<T> as *mut (),
-        );
+        self.sender_rt
+            .pin(event_id, (&mut self.data) as *mut Option<T> as *mut ());
 
         Poll::Pending
     }
 
-    fn close(&mut self, event_id: EventId) -> Poll<Result<(), T>> {
-        if !self.rt.is_awoken_for(event_id) {
+    fn close(&mut self) -> Poll<Result<(), T>> {
+        if !self.event_node.is_awoken_for(self.rt) {
             return Poll::Pending; // not our event, ignore the poll
         }
 
@@ -243,10 +241,10 @@ impl<'runtime, T, ReactorT: Reactor> Future for SenderFuture<'runtime, T, Reacto
 
         return match this.state {
             PeerFutureState::Created => {
-                let event_id = this.event_node.on_pin(ctx);
+                let event_id = unsafe { this.event_node.on_pin(ctx) };
                 this.transmit(event_id) // always Pending
             }
-            PeerFutureState::Exchanging => this.close(this.event_node.get_event_id()),
+            PeerFutureState::Exchanging => this.close(),
             PeerFutureState::Closed => {
                 panic!(
                     "aiur/channel_sender_future: {:?} was polled after completion.",
@@ -265,9 +263,8 @@ impl<'runtime, T, ReactorT: Reactor> Drop for SenderFuture<'runtime, T, ReactorT
                 "channel_sender_future: in the drop() {:?} - cancelling",
                 self.sender_rt.channel_id
             );
-            // unsafe: this object was pinned, so it is ok to invoke get_event_id_unchecked
-            let event_id = self.event_node.get_event_id();
-            self.sender_rt.unpin(event_id);
+            self.sender_rt.unpin(self.event_node.get_event_id());
+            let _ = self.event_node.on_cancel(); // remove the events from frozen list
         } else {
             // Created: SenderFuture was not polled (so it was not pinned) and it
             // is not logically safe to invoke get_event_id_unchecked(). And we really
@@ -334,16 +331,14 @@ impl<'runtime, T, ReactorT: Reactor> NextFuture<'runtime, T, ReactorT> {
 
     fn transmit(&mut self, event_id: EventId) -> Poll<Result<T, RecvError>> {
         self.set_state(PeerFutureState::Exchanging);
-        self.recver_rt.pin(
-            event_id,
-            (&mut self.data) as *mut Option<T> as *mut (),
-        );
+        self.recver_rt
+            .pin(event_id, (&mut self.data) as *mut Option<T> as *mut ());
 
         Poll::Pending
     }
 
-    fn close(&mut self, event_id: EventId) -> Poll<Result<T, RecvError>> {
-        if !self.rt.is_awoken_for(event_id) {
+    fn close(&mut self) -> Poll<Result<T, RecvError>> {
+        if !self.event_node.is_awoken_for(self.rt) {
             return Poll::Pending; // not our event, ignore the poll
         }
 
@@ -391,9 +386,8 @@ impl<'runtime, T, ReactorT: Reactor> Drop for NextFuture<'runtime, T, ReactorT> 
                 self.recver_rt.channel_id
             );
 
-            // unsafe: this object was pinned, so it is ok to invoke get_event_id_unchecked
-            let event_id = self.event_node.get_event_id();
-            self.recver_rt.unpin(event_id);
+            self.recver_rt.unpin(self.event_node.get_event_id());
+            let _ = self.event_node.on_cancel(); // remove the events from frozen list
         } else {
             modtrace!(
                 self.rt.tracer(),
@@ -420,10 +414,10 @@ impl<'runtime, T, ReactorT: Reactor> Future for NextFuture<'runtime, T, ReactorT
 
         return match this.state {
             PeerFutureState::Created => {
-                let event_id = this.event_node.on_pin(ctx);
+                let event_id = unsafe { this.event_node.on_pin(ctx) };
                 this.transmit(event_id) // always Pending
             }
-            PeerFutureState::Exchanging => this.close(this.event_node.get_event_id()),
+            PeerFutureState::Exchanging => this.close(),
             PeerFutureState::Closed => {
                 panic!(
                     "aiur/channel_next_future: {:?} was polled after completion.",

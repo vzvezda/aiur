@@ -48,17 +48,17 @@ fn join_tasks2() {
 // Makes this task tree:
 //
 // join_task2---Sleep(1s)
-//            \-NestedLoop(Sleep(2s)
+//            \-NestedLoop(Sleep(2s))
 #[test]
 fn nested_loop_in_join_tasks2() {
-    async fn frozable(rt: &toy_rt::Runtime) -> u32 {
+    async fn freezable(rt: &toy_rt::Runtime) -> u32 {
         rt.nested_loop(measure::sleep_and_ret(rt, Duration::from_millis(2000), 2))
     }
 
     async fn measured(rt: &toy_rt::Runtime) -> Vec<u32> {
         let (v1, v2) = toy_rt::join_tasks2(
             measure::sleep_and_ret(rt, Duration::from_millis(1000), 1),
-            frozable(rt),
+            freezable(rt),
         )
         .await;
 

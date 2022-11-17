@@ -71,7 +71,8 @@ pub enum OneOf8<T1, T2, T3, T4, T5, T6, T7, T8> {
 
 /// Stream to poll several futures concurrently.
 ///
-/// To create it use one of any_ofX() function or the macros [make_any_of!()] or [pinned_any_of!()].
+/// To create it use one of any_ofX() function or the macros [make_any_of!()](crate::make_any_of!) 
+/// or [pinned_any_of!()](crate::pinned_any_of!).
 /// Once created invoking `[AnyOfN::next()].await` polls the futures and returns the result of the
 /// first completed future. The consecutive call to `[AnyOfN::next()].await` returns result of the
 /// first completed of remaining futures, etc.

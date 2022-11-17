@@ -169,16 +169,14 @@ impl<'runtime, T, ReactorT: Reactor> SenderFuture<'runtime, T, ReactorT> {
     fn transmit(&mut self, event_id: EventId) -> Poll<Result<(), T>> {
         self.set_state(PeerFutureState::Exchanging);
 
-        self.runtime_channel.reg_sender(
-            event_id,
-            (&mut self.data) as *mut Option<T> as *mut (),
-        );
+        self.runtime_channel
+            .reg_sender(event_id, (&mut self.data) as *mut Option<T> as *mut ());
 
         Poll::Pending
     }
 
-    fn close(&mut self, event_id: EventId) -> Poll<Result<(), T>> {
-        if !self.runtime_channel.rt.is_awoken_for(event_id) {
+    fn close(&mut self) -> Poll<Result<(), T>> {
+        if !self.event_node.is_awoken_for(self.runtime_channel.rt) {
             return Poll::Pending; // not our event, ignore the poll
         }
 
@@ -212,10 +210,10 @@ impl<'runtime, T, ReactorT: Reactor> Future for SenderFuture<'runtime, T, Reacto
 
         return match this.state {
             PeerFutureState::Created => {
-                let event_id = this.event_node.on_pin(ctx);
+                let event_id = unsafe { this.event_node.on_pin(ctx) };
                 this.transmit(event_id) // always returns Pending
             }
-            PeerFutureState::Exchanging => this.close(this.event_node.get_event_id()),
+            PeerFutureState::Exchanging => this.close(),
             PeerFutureState::Closed => {
                 panic!("aiur/oneshot_sender_future: was polled after completion.")
             }
@@ -227,6 +225,7 @@ impl<'runtime, T, ReactorT: Reactor> Drop for SenderFuture<'runtime, T, ReactorT
     fn drop(&mut self) {
         modtrace!(self.tracer(), "oneshot_sender_future: drop()");
         self.runtime_channel.cancel_sender();
+        let _ = self.event_node.on_cancel(); // remove the events from frozen list
     }
 }
 
@@ -269,16 +268,14 @@ impl<'runtime, T, ReactorT: Reactor> RecverOnce<'runtime, T, ReactorT> {
 
     fn transmit(&mut self, event_id: EventId) -> Poll<Result<T, RecvError>> {
         self.set_state(PeerFutureState::Exchanging);
-        self.runtime_channel.reg_receiver(
-            event_id,
-            (&mut self.data) as *mut Option<T> as *mut (),
-        );
+        self.runtime_channel
+            .reg_receiver(event_id, (&mut self.data) as *mut Option<T> as *mut ());
 
         Poll::Pending
     }
 
-    fn close(&mut self, event_id: EventId) -> Poll<Result<T, RecvError>> {
-        if !self.runtime_channel.rt.is_awoken_for(event_id) {
+    fn close(&mut self) -> Poll<Result<T, RecvError>> {
+        if !self.event_node.is_awoken_for(self.runtime_channel.rt) {
             return Poll::Pending;
         }
 
@@ -299,6 +296,7 @@ impl<'runtime, T, ReactorT: Reactor> Drop for RecverOnce<'runtime, T, ReactorT> 
     fn drop(&mut self) {
         modtrace!(self.tracer(), "oneshot_recver_future: in the drop()");
         self.runtime_channel.cancel_receiver();
+        let _ = self.event_node.on_cancel(); // remove the events from frozen list
     }
 }
 
@@ -314,10 +312,10 @@ impl<'runtime, T, ReactorT: Reactor> Future for RecverOnce<'runtime, T, ReactorT
 
         return match this.state {
             PeerFutureState::Created => {
-                let event_id = this.event_node.on_pin(ctx);
+                let event_id = unsafe { this.event_node.on_pin(ctx) };
                 this.transmit(event_id) // always returns Pending
             }
-            PeerFutureState::Exchanging => this.close(this.event_node.get_event_id()),
+            PeerFutureState::Exchanging => this.close(),
             PeerFutureState::Closed => {
                 panic!("aiur/oneshot_recver_future: was polled after completion.")
             }

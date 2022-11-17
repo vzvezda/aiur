@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use crate::Runtime;
 use crate::TemporalReactor;
-use crate::{EventNode, EventId};
+use crate::{EventId, EventNode};
 
 /// Performs the async sleep.
 ///
@@ -57,11 +57,11 @@ impl<'rt, ReactorT: TemporalReactor> TimerFuture<'rt, ReactorT> {
     }
 
     // Verifies in reactor if given timer event is ready
-    fn verify(&mut self, event_id: EventId) -> Poll<()> {
-        // Timer in has to be in "Scheduled" state
+    fn verify(&mut self) -> Poll<()> {
+        // Assumes that timer has to be in "Scheduled" state
         debug_assert!(matches!(self.state, TimerState::Scheduled));
 
-        if self.rt.is_awoken_for(event_id) {
+        if self.event_node.is_awoken_for(self.rt) {
             self.state = TimerState::Done;
             Poll::Ready(())
         } else {
@@ -70,17 +70,15 @@ impl<'rt, ReactorT: TemporalReactor> TimerFuture<'rt, ReactorT> {
     }
 }
 
-
 // Cancels timer event in the reactor.
 impl<'rt, ReactorT: TemporalReactor> Drop for TimerFuture<'rt, ReactorT> {
     fn drop(&mut self) {
         match self.state {
-            // Unsafe usage: the object is a Future that has to be pinned to be
-            // in Scheduled state, so we are getting the correct event id here.
-            TimerState::Scheduled => self
-                .rt
-                .io()
-                .cancel_timer(self.event_node.get_event_id()),
+            TimerState::Scheduled => {
+                self.event_node
+                    .on_cancel()
+                    .map(|event_id| self.rt.io().cancel_timer(event_id));
+            }
             _ => (),
         }
     }
@@ -96,11 +94,11 @@ impl<'rt, ReactorT: TemporalReactor> Future for TimerFuture<'rt, ReactorT> {
 
         return match this.state {
             TimerState::Created { duration } => {
-                let event_id = this.event_node.on_pin(ctx);
+                let event_id = unsafe { this.event_node.on_pin(ctx) };
                 this.schedule(event_id, duration)
             }
-            TimerState::Scheduled => this.verify(this.event_node.get_event_id()),
-            TimerState::Done => Poll::Ready(()), // perhaps we should panic instead
+            TimerState::Scheduled => this.verify(),
+            TimerState::Done => panic!("aiur/TimerFuture: was polled after completion."),
         };
     }
 }
